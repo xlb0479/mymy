@@ -1,7 +1,7 @@
 # 基础知识
 本章就是让你了解一下Kubernetes的各个零部件，整个[集群](https://www.baidu.com/)是由啥构成的，深入理解Kubernetes是如何运作的。
 - [概要](#概要)
-- Kubernetes 对象
+- [Kubernetes对象](#Kubernetes对象)
 - Kubernetes Control Plane
 - 接下来……
 ## 概要
@@ -12,15 +12,22 @@
 - 每个非主节点上面跑两个进程：
    - [kubelet]()，跟Kubernetes Master进行通信。
    - [kube-proxy]()，网络代理，为每个节点提供网络服务。
-## Kubernetes objects
+## Kubernetes对象
 Kubernetes系统包含这么几个抽象的概念：容器化的应用及负载，相关的网络及磁盘资源，以及集群的其他信息。这些抽象的概念都被Kubernetes API实现成了一个一个的对象。参见[理解Kubernetes对象]()。基本的Kubernetes对象包括：
 - [泡德Pod]()
 - [Service]()
 - [Volume]()
 - [Namespace]()
+
 基于这些基础的对象，Kubernetes通过[控制器]()又封装出了一些高级的功能，包括：
+
 - [Deployment]()
 - [DaemonSet]()
 - [StatefulSet]()
 - [ReplicaSet]()
 - [Job]()
+
+## Kubernetes Control Plane
+上面已经说过，Kubernetes Control Plane包含了若干个进程，比如Kubernetes Master、kubelet，它们互相配合，共同管理集群的各项通信工作。Control Plane记录着集群中所有的Kubernetes对象，持续的监控着这些对象的状态。一旦你修改了某个对象的状态，Control Plane就会做出响应，将对象的真实状态调整为你所设定的状态。
+
+### Kubernetes Master
