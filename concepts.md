@@ -3,7 +3,7 @@
 - [概要](#概要)
 - [Kubernetes对象](#Kubernetes对象)
 - [Kubernetes Control Plane](#kubernetes-control-plane)
-- [接下来……](#接下来……)
+- [接下来……](#接下来)
 ## 概要
 当你用Kubernetes的时候，你需要使用*Kubernetes API对象*来描述你要*让集群达到一个什么样的状态*：运行什么东西，用什么镜像，跑几个副本，需要什么样的网络环境和磁盘资源，等等。通过创建各种Kubernetes API 对象，你就可以设定你所需要的目标状态，一般都是通过命令行工具`kubectl`来完成这些设定。当然你也可以直接调用Kubernetes API来完成这些工作。
 当你闹完上面的操作之后，*Kubernetes Control Plane*会通过Pod Lifecycle Event Generator([PLEG](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/node/pod-lifecycle-event-generator.md))，让整个集群达到你所设定的目标状态。在这个过程中，Kubernetes会偷偷的完成大量的工作，比如启动/重启容器，扩展应用的副本数，等等。Kubernetes Control Plane由以下几个进程组成：
@@ -39,3 +39,4 @@ Kubernetes Master负责维护集群的目标状态。比如你用`kubectl`命令
 节点，就是集群中运行各种应用的机器（虚拟机、物理机，等等）。Kubernetes Master控制着每一个节点，你一般不用直接跟节点打交道，都是通过master。如果你非要跟节点打交道，那你自己看着办吧。
 
 ## 接下来……
+如果想为本章做点儿贡献，那你fork一下，然后闹就行了。
