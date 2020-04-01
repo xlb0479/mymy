@@ -1,8 +1,8 @@
 # 基础知识
-本章就是让你了解一下Kubernetes的各个零部件，整个[集群](https://www.baidu.com/)是由啥构成的，深入理解Kubernetes是如何运作的。
+本章就是让你了解一下Kubernetes的各个零部件，整个[集群](https://www.baidu.com/)是由啥构成的，让你知道知道，明白明白，Kubernetes是如何运作的。
 - [概要](#概要)
 - [Kubernetes对象](#Kubernetes对象)
-- Kubernetes Control Plane
+- [Kubernetes Control Plane](#kubernetes-control-plane)
 - 接下来……
 ## 概要
 当你用Kubernetes的时候，你需要使用*Kubernetes API对象*来描述你要*让集群达到一个什么样的状态*：运行什么东西，用什么镜像，跑几个副本，需要什么样的网络环境和磁盘资源，等等。通过创建各种Kubernetes API 对象，你就可以设定你所需要的目标状态，一般都是通过命令行工具`kubectl`来完成这些设定。当然你也可以直接调用Kubernetes API来完成这些工作。
@@ -31,3 +31,9 @@ Kubernetes系统包含这么几个抽象的概念：容器化的应用及负载�
 上面已经说过，Kubernetes Control Plane包含了若干个进程，比如Kubernetes Master、kubelet，它们互相配合，共同管理集群的各项通信工作。Control Plane记录着集群中所有的Kubernetes对象，持续的监控着这些对象的状态。一旦你修改了某个对象的状态，Control Plane就会做出响应，将对象的真实状态调整为你所设定的状态。
 
 ### Kubernetes Master
+Kubernetes Master负责维护集群的目标状态。比如你用`kubectl`命令，其实就是在跟Kubernetes Master通信。
+
+“master”是由若干进程共同组成的（又说了一遍，你要是还记不住，那我一会儿再说一遍）。这些进程一般都在一个节点上，这个节点也就被称为主节点（这个事儿我已经反复叨叨好几遍了，最后一排你们几个注意听）。主机点可以做副本，从而实现高可用。
+
+### Kubernetes节点
+节点，就是集群中运行各种应用的机器（虚拟机、物理机，等等）。Kubernetes Master控制着每一个节点，你一般不用直接跟节点打交道，都是通过master。如果你非要跟节点打交道，那你自己看着办吧。
