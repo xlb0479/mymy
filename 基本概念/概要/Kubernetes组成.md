@@ -1,5 +1,5 @@
 # Kubernetes组成
-Kubernetes是个集群。
+Kubernetes是个集群，呵呵。
 
 k8s集群包含一群工作机器，称为[节点]()，运行容器化的应用程序。每个集群至少要有一个工作节点。
 
@@ -13,7 +13,7 @@ k8s集群包含一群工作机器，称为[节点]()，运行容器化的应用�
 
 - [Control Plane](#Control-Plane)
 - [Node](#Node)
-- [扩展组件](#扩展组件)
+- [扩展插件（Addons）](#扩展插件-addons)
 - [接下来……](#接下来)
 
 ## Control Plane
@@ -69,10 +69,40 @@ kube-proxy是每个[节点]()上的网络代理，负责一部分k8s[服务]()�
 [kube-proxy]()维护着节点上的网络规则。有了这些网络规则，集群上的Pod之间得以建立网络连接，集群外部的网络也得以和Pod进行通信。
 
 如果操作系统本身拥有数据包过滤层，kube-proxy便会加以利用，否则它就自己处理各种流量转发工作。
-### 容器运行时
+### 容器运行时（Container Runtime）
 容器运行时是用来运行容器的软件。
 
 k8s支持的容器运行时包括：[Docker](https://docs.docker.com/engine/)、[containerd](https://containerd.io/docs/)、[CRI-O](https://cri-o.io/#what-is-cri-o)，以及其他实现了[Kubernetes CRT(Container Runtime Interface)](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-node/container-runtime-interface.md)接口的软件。
 
-## 扩展插件
+## 扩展插件(Addons)
 
+扩展插件使用k8s的资源（[DaemonSet]()、[Deployment]()，等等）来实现一些其他功能。因为这里提供的是集群层面的功能，所以扩展插件的命名空间都是`kube-system`。
+
+下面列出了一部分扩展插件，完整的列表见[扩展插件]()。
+
+### DNS
+
+对于其他扩展插件来说，并不是严格意义上必需的，但是k8s集群必须要有[DNS]()，好多例子都需要用到它。
+
+除了你当前环境中已有的DNS服务之外，这里的DNS也是一个DNS服务，用于提供k8s服务的DNS记录。
+
+由k8s启动的容器会自动将这个DNS服务加入到它们的DNS搜索列表中。
+
+### Web UI（Dashboard）
+
+[Dashboard]()是k8s集群的一个Web管理界面。用于对集群以及集群上的程序进行管理以及问题排查。
+
+### 容器资源监控
+
+[容器资源监控]()将容器的一些常见的时间序列指标数据集中保存到数据库中，并且提供了一个UI管理界面。
+
+### 集群日志
+
+[集群日志]()负责将容器的日志集中保存到一个日志存储中，并提供搜索和浏览界面。
+
+## 接下来……
+
+- 看看什么是[节点（Node）]()
+- 看看什么是[控制器（Controller）]()
+- 看看什么是[kube-scheduler]()
+- 来，阅读一下etcd的[官方文档](https://etcd.io/docs)
