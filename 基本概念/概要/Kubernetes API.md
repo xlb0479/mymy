@@ -80,6 +80,7 @@ API版本和软件本身的版本之间并没有非常直接的关联关系。[A
 当前已经有一些API分组了：
 
 1.***core***分组，也被称为***legacy***分组，REST路径为`/api/v1`，使用`apiVersion: v1`。
+
 2.其他的命名分组的REST路径格式为`/apis/$GROUP_NAME/$VERSION`，并使用`apiVersion: $GROUP_NAME/$VERSION`（比如`apiVersion: batch/v1`）。完整的API分组见[Kubernetes API参考手册]()。
 
 通过[自定义资源]()，有两种方式可以对API进行扩展：
