@@ -91,7 +91,7 @@ API版本和软件本身的版本之间并没有非常直接的关联关系。[A
 
 ## 开启/关闭API分组
 
-默认情况下已经给你开启了一部分起源和API分组。可以通过apiserver的`--runtime-config`参数来设置它们的开启或关闭。这个参数的值是一个逗号间隔值。比如，要关闭batch/v1，就设置为`--runtime-config=batch/v1=false`，要开启batch/v2alpha1，就设置为`--runtime-config=batch/v2alpha1`。可以用逗号间隔的多个k=v进行设置。
+默认情况下已经给你开启了一部分资源和API分组。可以通过apiserver的`--runtime-config`参数来设置它们的开启或关闭。这个参数的值是一个逗号间隔值。比如，要关闭batch/v1，就设置为`--runtime-config=batch/v1=false`，要开启batch/v2alpha1，就设置为`--runtime-config=batch/v2alpha1`。可以用逗号间隔的多个k=v进行设置。
 
 >**注意**：修改`--runtime-config`参数之后要重启apiserver和controller-manager。
 
