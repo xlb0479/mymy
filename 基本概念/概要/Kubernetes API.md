@@ -68,13 +68,34 @@ API版本和软件本身的版本之间并没有非常直接的关联关系。[A
    - 都测过了。可以安全使用。默认开启。
    - 不会删掉，但细节可能发生变化。
    - 对象的schema和语义，在后续的beta或stable版本中，可能会出现不兼容的问题。出现这种问题的话，我们会告诉你该如何升级。这时候可能要涉及到API对象的删除、编辑和重建。其中，编辑的时候，你可得长点儿心。整个过程中，应用可能需要停服。
-   - 由于以上原因，建议只在非关键业务场景中使用。如果你有好几个集群，每个集群可以单独升级，那你可以不用这么谨慎。
+   - 由于以上原因，建议只在非关键业务场景中使用。如果你有好几个集群，每个集群可以单独升级，那你可以不用这么谨慎，但也别浪。
    - **希望大家踊跃尝试beta版本的功能并发表你们的意见！一旦这些功能退出了beta版本，那我们就不会再改了。**
 - Stable版本（稳定版）：
    - 版本号是`vX`，`X`是个整数。
    - 稳定版的功能会发布到正式版软件中，并且，会活得很久。
 
 ## API分组
+为了更方便的扩展Kubernetes API，我们实现了[***API分组***](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/api-machinery/api-group.md)。API分组用REST路径的形式声明在对象的`apiVersion`中。
+
+当前已经有一些API分组了：
+
+1.***core***分组，也被称为***legacy***分组，REST路径为`/api/v1`，使用`apiVersion: v1`。
+2.其他的命名分组的REST路径格式为`/apis/$GROUP_NAME/$VERSION`，并使用`apiVersion: $GROUP_NAME/$VERSION`（比如`apiVersion: batch/v1`）。完整的API分组见[Kubernetes API参考手册]()。
+
+通过[自定义资源]()，有两种方式可以对API进行扩展：
+
+1.使用[CustomResourceDefinition]()。
+
+2.可以完全自己使用apiserver，通过[aggregator]()实现无缝衔接，釜底抽薪。
 
 ## 开启/关闭API分组
+
+默认情况下已经给你开启了一部分起源和API分组。可以通过apiserver的`--runtime-config`参数来设置它们的开启或关闭。这个参数的值是一个逗号间隔值。比如，要关闭batch/v1，就设置为`--runtime-config=batch/v1=false`，要开启batch/v2alpha1，就设置为`--runtime-config=batch/v2alpha1`。可以用逗号间隔的多个k=v进行设置。
+
+>**注意**：修改`--runtime-config`参数之后要重启apiserver和controller-manager。
+
 ## 开启extensions/v1beta1分组中特定的资源
+
+`extensions/v1beta1`分组中的DaemonSet、Deployment、StatefulSet、NetworkPolicy、PodSecurityPolicy以及ReplicaSet默认都是关闭的。比如要开启Deployment和DaemonSet，就要这么设置一下：`--runtime-config=extensions/v1beta1/deployments=true,extensions/v1beta1/daemonsets=true`。
+
+>**注意**：只有`extensions/v1beta1`分组下的资源支持单独开关，这也是由于一些遗留问题导致的。
