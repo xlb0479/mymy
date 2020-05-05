@@ -355,4 +355,4 @@ ReplicaSet不需要用户直接去创建Pod，而是由它自己管理，比如�
 
 ### ReplicationController
 
-先有的[*ReplicationController*]()，后有的ReplicaSet。它俩的目的是一样的，行为也差不多，只不过ReplicationController不支持用选择器来选定[标签](../../概要/Kubernetes对象/标签（Label）和选择器（Selector）.md#标签选择器)集合。所以，同样的情况下现在基本上都用ReplicaSet了。
+先有的[*ReplicationController*]()，后有的ReplicaSet。它俩的目的是一样的，行为也差不多，只不过ReplicationController不支持用条件集合来选定[标签](../../概要/Kubernetes对象/标签（Label）和选择器（Selector）.md#标签选择器)。所以，同样的情况下现在基本上都用ReplicaSet了。
