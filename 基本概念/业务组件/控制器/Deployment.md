@@ -351,7 +351,241 @@ Waiting for rollout to finish: 1 out of 3 new replicas have been updated...
 ```
 
 - 按下Ctrl-C停止状态监控。关于卡住的更多信息，[看这儿](#各种状态)。
-- 可以看到
+- 可以看到旧的副本有2个（`nginx-deployment-1564180365`和`nginx-deployment-2035384211`），新的副本有1个（`nginx-deployment-3066724191`）。
+
+```shell script
+kubectl get rs
+```
+
+返回结果：
+
+```text
+NAME                          DESIRED   CURRENT   READY   AGE
+nginx-deployment-1564180365   3         3         3       25s
+nginx-deployment-2035384211   0         0         0       36s
+nginx-deployment-3066724191   1         1         0       6s
+```
+
+- 看一下Pod，发现新ReplicaSet建了1个Pod，一直在那里无限拉镜像。
+
+```shell script
+kubectl get pods
+```
+
+返回结果：
+
+```text
+NAME                                READY     STATUS             RESTARTS   AGE
+nginx-deployment-1564180365-70iae   1/1       Running            0          25s
+nginx-deployment-1564180365-jbqqo   1/1       Running            0          25s
+nginx-deployment-1564180365-hysrc   1/1       Running            0          25s
+nginx-deployment-3066724191-08mng   0/1       ImagePullBackOff   0          6s
+```
+
+>**注意**：Deployment控制器可以自动停止有问题的滚动发布，停止扩充新的ReplicaSet。具体取决于rollingUpdate参数（`maxUnavailable`）。默认为25%。
+
+- 查看Deployment：
+
+```shell script
+kubectl describe deployment
+```
+
+返回结果：
+
+```text
+Name:           nginx-deployment
+Namespace:      default
+CreationTimestamp:  Tue, 15 Mar 2016 14:48:04 -0700
+Labels:         app=nginx
+Selector:       app=nginx
+Replicas:       3 desired | 1 updated | 4 total | 3 available | 1 unavailable
+StrategyType:       RollingUpdate
+MinReadySeconds:    0
+RollingUpdateStrategy:  25% max unavailable, 25% max surge
+Pod Template:
+  Labels:  app=nginx
+  Containers:
+   nginx:
+    Image:        nginx:1.161
+    Port:         80/TCP
+    Host Port:    0/TCP
+    Environment:  <none>
+    Mounts:       <none>
+  Volumes:        <none>
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      True    MinimumReplicasAvailable
+  Progressing    True    ReplicaSetUpdated
+OldReplicaSets:     nginx-deployment-1564180365 (3/3 replicas created)
+NewReplicaSet:      nginx-deployment-3066724191 (1/1 replicas created)
+Events:
+  FirstSeen LastSeen    Count   From                    SubObjectPath   Type        Reason              Message
+  --------- --------    -----   ----                    -------------   --------    ------              -------
+  1m        1m          1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled up replica set nginx-deployment-2035384211 to 3
+  22s       22s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled up replica set nginx-deployment-1564180365 to 1
+  22s       22s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled down replica set nginx-deployment-2035384211 to 2
+  22s       22s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled up replica set nginx-deployment-1564180365 to 2
+  21s       21s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled down replica set nginx-deployment-2035384211 to 1
+  21s       21s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled up replica set nginx-deployment-1564180365 to 3
+  13s       13s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled down replica set nginx-deployment-2035384211 to 0
+  13s       13s         1       {deployment-controller }                Normal      ScalingReplicaSet   Scaled up replica set nginx-deployment-3066724191 to 1
+```
+
+要想让这个世界恢复平静，需要将Deployment回滚到上一个稳定的版本。
+
+### 检查Deployment的发布历史
+
+按照以下步骤检查发布历史：
+
+- 1.查看Deployment的版本历史：
+
+```shell script
+kubectl rollout history deployment.v1.apps/nginx-deployment
+```
+
+返回结果：
+
+```text
+deployments "nginx-deployment"
+REVISION    CHANGE-CAUSE
+1           kubectl apply --filename=https://k8s.io/examples/controllers/nginx-deployment.yaml --record=true
+2           kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:1.16.1 --record=true
+3           kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:1.161 --record=true
+```
+
+`CHANGE-CAUSE`是在创建过程中从Deployment的`kubernetes.io/change-cause`注解中拷贝到版本信息中的。   
+可以使用下面的方式指定`CHANGE-CAUSE`内容：
+
+- 给Deployment设置注解
+
+```shell script
+kubectl annotate deployment.v1.apps/nginx-deployment kubernetes.io/change-cause="image updated to 1.16.1"
+```
+
+- 给`kubectl`命令增加`--record`选项可以将命令内容保存到资源信息中。
+- 手动编辑资源信息。
+
+- 2.查看每个版本的详情：
+
+```shell script
+kubectl rollout history deployment.v1.apps/nginx-deployment --revision=2
+```
+
+返回结果：
+
+```text
+deployments "nginx-deployment" revision 2
+  Labels:       app=nginx
+          pod-template-hash=1159050644
+  Annotations:  kubernetes.io/change-cause=kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:1.16.1 --record=true
+  Containers:
+   nginx:
+    Image:      nginx:1.16.1
+    Port:       80/TCP
+     QoS Tier:
+        cpu:      BestEffort
+        memory:   BestEffort
+    Environment Variables:      <none>
+  No volumes.
+```
+
+### 回滚到之前的版本
+
+参照下面的步骤可以将Deployment回滚到版本2。
+
+- 1.现在，你痛定思痛，决定回滚到上一个版本：
+
+```shell script
+kubectl rollout undo deployment.v1.apps/nginx-deployment
+```
+
+返回结果：
+
+```text
+deployment.apps/nginx-deployment rolled back
+```
+
+你还可以用`--to-revision`回滚到指定的版本：
+
+```shell script
+kubectl rollout undo deployment.v1.apps/nginx-deployment --to-revision=2
+```
+
+返回结果：
+
+```text
+deployment.apps/nginx-deployment rolled back
+```
+
+关于rollout相关的命令可以看一下[`kubectl rollout`](https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#rollout)。
+
+现在Deployment回滚到上一个版本了。你会看到Deployment为其生成了一个`DeploymentRollback`事件。
+
+- 2.检查回滚是否成功，Deployment是否正常：
+
+```shell script
+kubectl get deployment nginx-deployment
+```
+
+返回结果：
+
+```text
+NAME               READY   UP-TO-DATE   AVAILABLE   AGE
+nginx-deployment   3/3     3            3           30m
+```
+
+- 3.查看Deployment详情：
+
+```shell script
+kubectl describe deployment nginx-deployment
+```
+
+返回结果：
+
+```text
+Name:                   nginx-deployment
+Namespace:              default
+CreationTimestamp:      Sun, 02 Sep 2018 18:17:55 -0500
+Labels:                 app=nginx
+Annotations:            deployment.kubernetes.io/revision=4
+                        kubernetes.io/change-cause=kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:1.16.1 --record=true
+Selector:               app=nginx
+Replicas:               3 desired | 3 updated | 3 total | 3 available | 0 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  25% max unavailable, 25% max surge
+Pod Template:
+  Labels:  app=nginx
+  Containers:
+   nginx:
+    Image:        nginx:1.16.1
+    Port:         80/TCP
+    Host Port:    0/TCP
+    Environment:  <none>
+    Mounts:       <none>
+  Volumes:        <none>
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      True    MinimumReplicasAvailable
+  Progressing    True    NewReplicaSetAvailable
+OldReplicaSets:  <none>
+NewReplicaSet:   nginx-deployment-c4747d96c (3/3 replicas created)
+Events:
+  Type    Reason              Age   From                   Message
+  ----    ------              ----  ----                   -------
+  Normal  ScalingReplicaSet   12m   deployment-controller  Scaled up replica set nginx-deployment-75675f5897 to 3
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled up replica set nginx-deployment-c4747d96c to 1
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled down replica set nginx-deployment-75675f5897 to 2
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled up replica set nginx-deployment-c4747d96c to 2
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled down replica set nginx-deployment-75675f5897 to 1
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled up replica set nginx-deployment-c4747d96c to 3
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled down replica set nginx-deployment-75675f5897 to 0
+  Normal  ScalingReplicaSet   11m   deployment-controller  Scaled up replica set nginx-deployment-595696685f to 1
+  Normal  DeploymentRollback  15s   deployment-controller  Rolled back deployment "nginx-deployment" to revision 2
+  Normal  ScalingReplicaSet   15s   deployment-controller  Scaled down replica set nginx-deployment-595696685f to 0
+```
 
 ## 伸缩
 
