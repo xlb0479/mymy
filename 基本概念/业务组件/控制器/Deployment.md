@@ -589,9 +589,376 @@ Events:
 
 ## 伸缩
 
+执行如下操作，对Deployment进行伸缩：
+
+```shell script
+kubectl scale deployment.v1.apps/nginx-deployment --replicas=10
+```
+
+返回结果：
+
+```text
+deployment.apps/nginx-deployment scaled
+```
+
+如果集群开启了[Pod自动伸缩功能]()，你可以给Deployment设置一个自动伸缩器（autoscaler），基于CPU使用率设置好Pod数量的最大最小值。
+
+```shell script
+kubectl autoscale deployment.v1.apps/nginx-deployment --min=10 --max=15 --cpu-percent=80
+```
+
+返回结果：
+
+```text
+deployment.apps/nginx-deployment scaled
+```
+
+### 均匀伸缩
+
+Deployment的滚动更新可以在某一时刻同时运行应用的多个版本。当某一次滚动发布（rollout）正在进行中（进行中或被暂停），此时你或者自动伸缩起又触发了一次Deployment的滚动更新，为了降低风险，Deployment控制器会平衡两个版本的ReplicaSet（和它的Pod）。此之谓*均匀伸缩（proportional scaling）*。
+
+比如当前的Deployment有10个副本，[maxSurge](#max-surge)=3，[maxUnavailable](#max-unavailable)=2。
+
+- 确认10个副本都在运行。
+
+```shell script
+kubectl get deploy
+```
+
+返回结果：
+
+```text
+NAME                 DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+nginx-deployment     10        10        10           10          50s
+```
+
+- 故意把镜像改成满世界都找不到的版本
+
+```shell script
+kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:sometag
+```
+
+返回结果：
+
+```text
+deployment.apps/nginx-deployment image updated
+```
+
+- 镜像更新触发了一次新的滚动发布，ReplicaSet为nginx-deployment-1989198191，但是因为我们前面设置了`maxUnavailable`，所以它卡住了。检查滚动发布的状态：
+
+```shell script
+kubectl get rs
+```
+
+返回结果：
+
+```text
+NAME                          DESIRED   CURRENT   READY     AGE
+nginx-deployment-1989198191   5         5         0         9s
+nginx-deployment-618515232    8         8         8         1m
+```
+
+- 此时会产生一个新的伸缩请求。自动伸缩器要将Deployment的副本数推到15。Deployment控制器就要决定这5个新的副本放在哪。如果没有均匀伸缩，5个新的副本全都会加到新的ReplicaSet下。如果有了均匀伸缩，嘿嘿，这些副本就会在所有ReplicaSet上分配。较多的部分分给当前副本数最多的ReplicaSet，较少的部分给当前副本较少的ReplicaSet。如果有剩下的，都分给副本数最多的ReplicaSet。副本数为零的ReplicaSet不变。
+
+最终，旧的ReplicaSet加了3个副本，新的ReplicaSet加了2个副本。滚动发布最终要将所有的副本都推到新的ReplicaSet下面，认为新的副本都能用。确认当前的状态：
+
+```shell script
+kubectl get deploy
+```
+
+返回结果：
+
+```text
+NAME                 DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+nginx-deployment     15        18        7            8           7m
+```
+
+从当前状态可以看出每个ReplicaSet加了多少副本。
+
+```shell script
+kubectl get rs
+```
+
+返回结果：
+
+```text
+NAME                          DESIRED   CURRENT   READY     AGE
+nginx-deployment-1989198191   7         7         0         7m
+nginx-deployment-618515232    11        11        11        7m
+```
+
 ## 暂停与恢复
 
+在进行更新前，可以先把Deployment暂停了，然后再恢复过来。这样就可以在这期间进行多次修复，避免触发不必要的滚动发布。
+
+- 比如刚刚建好了要给Deployment：
+
+```shell script
+kubectl get deploy
+```
+
+返回结果：
+
+```text
+NAME      DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+nginx     3         3         3            3           1m
+```
+
+查看滚动发布的状态：
+
+```shell script
+kubectl get rs
+```
+
+返回结果：
+
+```text
+NAME               DESIRED   CURRENT   READY     AGE
+nginx-2142116321   3         3         3         1m
+```
+
+- 执行暂停命令：
+
+```shell script
+kubectl rollout pause deployment.v1.apps/nginx-deployment
+```
+
+返回结果：
+
+```text
+deployment.apps/nginx-deployment paused
+```
+
+- 更新镜像：
+
+```shell script
+kubectl set image deployment.v1.apps/nginx-deployment nginx=nginx:1.16.1
+```
+
+返回结果：
+
+```text
+deployment.apps/nginx-deployment image updated
+```
+
+- 发现没有触发新的滚动发布：
+
+```shell script
+kubectl rollout history deployment.v1.apps/nginx-deployment
+```
+
+返回结果：
+
+```text
+deployments "nginx"
+REVISION  CHANGE-CAUSE
+1   <none>
+```
+
+- 查看滚动发布状态，确认Deployment是否更新成功：
+
+```shell script
+kubectl get rs
+```
+
+返回结果：
+
+```text
+NAME               DESIRED   CURRENT   READY     AGE
+nginx-2142116321   3         3         3         2m
+```
+
+- 可以随便进行各种更新，比如再改一下资源使用限制：
+
+```shell script
+kubectl set resources deployment.v1.apps/nginx-deployment -c=nginx --limits=cpu=200m,memory=512Mi
+```
+
+返回结果：
+
+```text
+deployment.apps/nginx-deployment resource requirements updated
+```
+
+Deployment暂停前的那些Pod会一直正常运行，只要Deployment是暂停状态，新的更新就不会产生任何实际影响。
+
+- 最后，恢复Deployment，此时会产生一个新的ReplicaSet，包含了之前做的所有更新操作：
+
+```shell script
+kubectl rollout resume deployment.v1.apps/nginx-deployment
+```
+
+返回结果：
+
+```text
+deployment.apps/nginx-deployment resumed
+```
+
+- 持续监控滚动发布的状态。
+
+```shell script
+kubectl get rs -w
+```
+
+返回结果：
+
+```text
+NAME               DESIRED   CURRENT   READY     AGE
+nginx-2142116321   2         2         2         2m
+nginx-3926361531   2         2         0         6s
+nginx-3926361531   2         2         1         18s
+nginx-2142116321   1         2         2         2m
+nginx-2142116321   1         2         2         2m
+nginx-3926361531   3         2         1         18s
+nginx-3926361531   3         2         1         18s
+nginx-2142116321   1         1         1         2m
+nginx-3926361531   3         3         1         18s
+nginx-3926361531   3         3         2         19s
+nginx-2142116321   0         1         1         2m
+nginx-2142116321   0         1         1         2m
+nginx-2142116321   0         0         0         2m
+nginx-3926361531   3         3         3         20s
+```
+
+- 查看最新的状态：
+
+```shell script
+kubectl get rs
+```
+
+返回结果：
+
+```text
+NAME               DESIRED   CURRENT   READY     AGE
+nginx-2142116321   0         0         0         2m
+nginx-3926361531   3         3         3         28s
+```
+
+>**注意**：暂停状态下的Deployment不能回滚，必须先恢复Deployment。
+
 ## 各种状态
+
+Deployment一生当中会进入不同的状态。比如发布新的ReplicaSet时会进入[processing](#processing)状态，又或是[complete](#complete)，也可能不幸变成[failed](#failed)。
+
+### Processing
+
+当满足以下条件之一时，k8s就会把Deployment标记成*processing*：
+
+- Deployment创建了一个新的ReplicaSet。
+- Deployment正在扩充新的ReplicaSet。
+- Deployment正在缩减旧的ReplicaSet。
+- 新的Pod状态变为ready或available（ready状态持续超过[MinReadySeconds](#min-ready-seconds)）。
+
+可以执行`kubectl rollout status`来监控Deployment的状态变化。
+
+### Complete
+
+当Deployment满足以下条件时，k8s会将Deployment标记成*complete*：
+
+- Deployment的所有副本都已更新到最新的版本，即所有更新全部完成。
+- Deployment的所有副本都进入可用（available）状态。
+- Deployment没有还在运行中的旧副本。
+
+可以执行`kubectl rollout status`检查Deployment的状态是否是complete。如果滚动发布正常完成，`kubectl rollout status`执行后的退出码为零。
+
+```shell script
+kubectl rollout status deployment.v1.apps/nginx-deployment
+```
+
+返回结果：
+
+```text
+Waiting for rollout to finish: 2 of 3 updated replicas are available...
+deployment.apps/nginx-deployment successfully rolled out
+$ echo $?
+0
+```
+
+### Failed
+
+Deployment在部署新的ReplicaSet时可能会一直卡在那儿。这可能是因为以下几种原因导致：
+
+- 资源配额（quota）不足
+- 就绪探测（readiness probe）失败
+- 镜像拉不下来（便秘）
+- 权限不够
+- 资源限制
+- 应用配置错误
+
+可以在Deployment的spec中设置期限参数（[`.spec.progressDeadlineSeconds`](#progress-deadline-seconds)）来快速发现这些问题。`.spec.progressDeadlineSeconds`参数用来设置经过多长时间后Deployment控制器就会认为它卡住了。
+
+下面的`kubectl`命令设置了`progressDeadlineSeconds`，如果Deployment超过10分钟没动静，控制器就会做出响应：
+
+```shell script
+kubectl patch deployment.v1.apps/nginx-deployment -p '{"spec":{"progressDeadlineSeconds":600}}'
+```
+
+返回结果：
+
+```text
+deployment.apps/nginx-deployment patched
+```
+
+到达死期后，Deployment控制器会添加一个DeploymentCondition，添加到Deployment的`.status.conditions`中，属性如下：
+
+- Type=Progressing
+- Status=False
+- Reason=ProgressDeadlineExceeded
+
+关于状态的condition，可以去看[k8s API规范](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties)。
+
+>**注意**：除了报告一下`Reason=ProgressDeadlineExceeded`，k8s不会对卡住的Deployment有其他操作。更高级的编排器可以利用这种状态做出合适的动作，比如将Deployment回滚到上一个版本。
+
+>**注意**：如果Deployment暂停了，此时k8s不会去检查它的死期。所以可以在滚动发布过程中安全地暂停和恢复Deployment，不用担心触发死期将至的紧迫感。
+
+可能偶尔会出现那么一小会儿的错误状态，可能是某个超时时间设置的有点儿短，或者是其他短暂的错误。比如我们现在假设你资源配额不足了。你查看Deployment的信息就会发现：
+
+```shell script
+kubectl describe deployment nginx-deployment
+```
+
+返回结果：
+
+```text
+<...>
+Conditions:
+  Type            Status  Reason
+  ----            ------  ------
+  Available       True    MinimumReplicasAvailable
+  Progressing     True    ReplicaSetUpdated
+  ReplicaFailure  True    FailedCreate
+<...>
+```
+
+执行`kubectl get deployment nginx-deployment -o yaml`能看到如下信息：
+
+```text
+status:
+  availableReplicas: 2
+  conditions:
+  - lastTransitionTime: 2016-10-04T12:25:39Z
+    lastUpdateTime: 2016-10-04T12:25:39Z
+    message: Replica set "nginx-deployment-4262182780" is progressing.
+    reason: ReplicaSetUpdated
+    status: "True"
+    type: Progressing
+  - lastTransitionTime: 2016-10-04T12:25:42Z
+    lastUpdateTime: 2016-10-04T12:25:42Z
+    message: Deployment has minimum availability.
+    reason: MinimumReplicasAvailable
+    status: "True"
+    type: Available
+  - lastTransitionTime: 2016-10-04T12:25:39Z
+    lastUpdateTime: 2016-10-04T12:25:39Z
+    message: 'Error creating: pods "nginx-deployment-4262182780-" is forbidden: exceeded quota:
+      object-counts, requested: pods=1, used: pods=3, limited: pods=2'
+    reason: FailedCreate
+    status: "True"
+    type: ReplicaFailure
+  observedGeneration: 3
+  replicas: 2
+  unavailableReplicas: 2
+```
 
 ## 清理机制
 
