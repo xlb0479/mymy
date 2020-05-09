@@ -617,7 +617,7 @@ deployment.apps/nginx-deployment scaled
 
 Deployment的滚动更新可以在某一时刻同时运行应用的多个版本。当某一次滚动发布（rollout）正在进行中（进行中或被暂停），此时你或者自动伸缩起又触发了一次Deployment的滚动更新，为了降低风险，Deployment控制器会平衡两个版本的ReplicaSet（和它的Pod）。此之谓*均匀伸缩（proportional scaling）*。
 
-比如当前的Deployment有10个副本，[maxSurge](#max-surge)=3，[maxUnavailable](#max-unavailable)=2。
+比如当前的Deployment有10个副本，[maxSurge](#maxSurge)=3，[maxUnavailable](#maxUnavailable)=2。
 
 - 确认10个副本都在运行。
 
@@ -847,7 +847,7 @@ Deployment一生当中会进入不同的状态。比如发布新的ReplicaSet时
 - Deployment创建了一个新的ReplicaSet。
 - Deployment正在扩充新的ReplicaSet。
 - Deployment正在缩减旧的ReplicaSet。
-- 新的Pod状态变为ready或available（ready状态持续超过[MinReadySeconds](#min-ready-seconds)）。
+- 新的Pod状态变为ready或available（ready状态持续超过[MinReadySeconds](#minReadySeconds)）。
 
 可以执行`kubectl rollout status`来监控Deployment的状态变化。
 
@@ -885,7 +885,7 @@ Deployment在部署新的ReplicaSet时可能会一直卡在那儿。这可能是
 - 资源限制
 - 应用配置错误
 
-可以在Deployment的spec中设置期限参数（[`.spec.progressDeadlineSeconds`](#progress-deadline-seconds)）来快速发现这些问题。`.spec.progressDeadlineSeconds`参数用来设置经过多长时间后Deployment控制器就会认为它卡住了。
+可以在Deployment的spec中设置期限参数（[`.spec.progressDeadlineSeconds`](#progressDeadlineSeconds)）来快速发现这些问题。`.spec.progressDeadlineSeconds`参数用来设置经过多长时间后Deployment控制器就会认为它卡住了。
 
 下面的`kubectl`命令设置了`progressDeadlineSeconds`，如果Deployment超过10分钟没动静，控制器就会做出响应：
 
@@ -960,8 +960,140 @@ status:
   unavailableReplicas: 2
 ```
 
+最后，死期到了之后，k8s更新Progressing的信息：
+
+```text
+Conditions:
+  Type            Status  Reason
+  ----            ------  ------
+  Available       True    MinimumReplicasAvailable
+  Progressing     False   ProgressDeadlineExceeded
+  ReplicaFailure  True    FailedCreate
+```
+
+对于此类问题，你可以缩减Deployment的规模、或者缩减其他控制器的规模、或者增加该命名空间的资源配额。资源配额满足需要后Deployment控制器会完成它的滚动发布，可以看到Deployment的进度状态更新为成功（`Status=True`且`Reason=NewReplicaSetAvailable`）。
+
+```text
+Conditions:
+  Type          Status  Reason
+  ----          ------  ------
+  Available     True    MinimumReplicasAvailable
+  Progressing   True    NewReplicaSetAvailable
+```
+
+`Type=Available`且`Status=True`说明Deployment已经实现最小可用性。最小可用性是由部署策略参数指定的。`Type=Progressing`且`Status=True`就是说Deployment要么是正在进行滚动发布，要么是已经完成并达到最小可用性（查看Reason——本例中`Reason=NewReplicaSetAvailable`就意味着已经完成了）。
+
+想看看是不是失败了，可以执行`kubectl rollout status`。如果死期到了，`kubectl rollout status`命令会以非零的退出码结束。
+
+```shell script
+kubectl rollout status deployment.v1.apps/nginx-deployment
+```
+
+返回结果：
+
+```text
+Waiting for rollout to finish: 2 out of 3 new replicas have been updated...
+error: deployment "nginx" exceeded its progress deadline
+$ echo $?
+1
+```
+
+### 处理失败的部署
+
+能对完成的Deployment做啥，就能对失败的Deployment做啥。可以伸缩、回滚甚至暂停一下弄弄Pod模板啥的。
+
 ## 清理机制
+
+可以设置Deployment的`.spec.revisionHistoryLimit`，定义要保留多少个旧的ReplicaSet信息。其余的会被后台回收掉。默认是10。
+
+>**注意**：如果设成0，那就会删除所有历史记录，会导致Deployment无法进行回滚操作。
 
 ## 灰度发布
 
+如果你想针对一部分用户或服务器做一次滚动发布，可以创建多个Deployment，每个版本一个，参照[管理资源]()中提供的灰度发布模式进行操作。
+
 ## 编写Spec
+
+跟其他k8s配置一样，Deployment也要有`.apiVersion`、`.kind`和`.metadata`字段。关于配置文件的常见玩儿法，可以看一下[部署应用程序]()，配置容器，以及[用kubectl管理资源](../../概要/Kubernetes对象/k8s对象管理.md)的文档。Deployment对象的名字必须是有效的[DNS子域名](../../概要/Kubernetes对象/对象的名字和ID.md#DNS子域名)。
+
+同样，Deployment需要一个[`.spec`](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#spec-and-status)属性。
+
+### Pod模板
+
+`.spec.template`和`.spec.selector`是`.spec`中仅有的两个必填字段。
+
+`.spec.template`就是[Pod模板](../泡德（Pod）/概要.md#Pod模板)。它的结构跟[Pod](../泡德（Pod）/Pod.md)一样，只不过它是个嵌套属性，没有`apiVersion`和`kind`字段。
+
+除了Pod中的必填字段，Deployment中的Pod模板必须要指定适当的标签和重启策略。对于标签，注意别跟其他控制器重叠了。见[选择器](#selector)）。
+
+[`.spec.template.spec.restartPolicy`](../泡德（Pod）/Pod生命周期.md#重启策略)必须是`Always`，默认就是。
+
+### Replicas
+
+`.spec.replicas`字段是可选的，指定Pod副本数。默认是1。
+
+### Selector
+
+`.spec.selector`是必填的，指定[标签选择器](../../概要/Kubernetes对象/标签（Label）和选择器（Selector）.md)，定义Deployment要管理的目标Pod。
+
+`.spec.selector`必须跟`.spec.template.metadata.labels`匹配，否则请求会被拒绝。
+
+在`apps/v1`API版本中，如果不设置的话，默认的`.spec.selector`和`.metadata.labels`并不等于`.spec.template.metadata.labels`。所以必须显式定义。同样需要注意的是，在`apps/v1`中，Deployment的`.spec.selector`在创建之后就不能改了。
+
+对于那些跟选择器匹配到的Pod，如果他们的模板跟`.spec.template`不一样，或者Pod总数超过了`.spec.replicas`，Deployment就可以停掉这些Pod。如果Pod数量少于预期，会按照`.spec.template`来创建新的Pod。
+
+>**注意**：不要创建跟当前选择器匹配的其他Pod，不要直接建，不要用另外的Deployment来建，也不要用其他的ReplicaSet或ReplicationController等控制器来建。如果你这么干了，原本的Deployment会认为这些Pod是它自己建的。k8s并不会阻止你干这种傻事。
+
+如果有多个控制器的选择器范围重叠了，这些控制器就会互相打架，就完犊子了。
+
+### Strategy
+
+`.spec.strategy`定义了新旧Pod替换的策略。`.spec.strategy.type`可以是“Recreate”或“RollingUpdate”，默认是“RollingUpdate”。
+
+#### Recreate
+
+如果`.spec.strategy.type==Recreate`，在新建Pod之前会杀掉所有的Pod。
+
+>**注意**：这招只会保证在升级的时候，新建Pod之前所有的Pod都会停掉。当你对Deployment进行升级时，所有的旧版本Pod会被立即停掉。直到把Pod都删干净才会创建新版本的Pod。如果你手动删了一个Pod，由ReplicaSet控制的生命周期会立即创建替代的Pod（即便旧的Pod可能仍处于Terminating的状态）。如果你希望对Pod有某种限度上的保证，你应该考虑使用[StatefulSet](StatefulSet.md)。
+
+#### RollingUpdate
+
+如果`.spec.strategy.type==RollingUpdate`，Deployment会以滚动的形式来更新Pod。可以设置`maxUnavailable`和`maxSurge`来控制滚动的过程。
+
+##### maxUnavailable
+
+`.spec.strategy.rollingUpdate.maxUnavailable`是可选字段，用于指定在更新过程中处于不可用状态的Pod的最大数量。这个值可以是一个具体值（比如5，比如吾，比如我），也可以是一个百分比（比如10%）。如果是百分比，则将计算结果向下取整。这个值跟`.spec.strategy.rollingUpdate.maxSurge`不能同时为0。默认是25%。
+
+比如我们把这个值设为30%，当滚动更新开始的时候，旧的ReplicaSet就会被立即缩减到目标数的70%。新的Pod就绪后，旧的ReplicaSet会被进一步缩减，同时不断扩充新的ReplicaSet，确保在更新过程中至少有目标数量的70%的Pod处于可用状态。
+
+##### maxSurge
+
+`.spec.strategy.rollingUpdate.maxSurge`也是个可选字段，用于指定最多可以创建多少个超出目标数量的Pod。这个值可以是一个具体值（比如5，比如吾，比如我），也可以是一个百分比（比如10%）。这个值跟`MaxUnavailable`不能同时为0。如果是百分比，则将计算结果向上取整。这个值跟`.spec.strategy.rollingUpdate.maxSurge`不能同时为0。默认是25%。
+
+比如我们设置成30%，当滚动更新开始的时候，新的ReplicaSet会立即开始扩充，只要新旧Pod总数不超过目标数量的130%。每当旧的Pod被删掉，新的ReplicaSet就可以继续扩充，保证整个过程中Pod总数不超过目标数量的130%。
+
+### progressDeadlineSeconds
+
+`.spec.progressDeadlineSeconds`是可选字段，用来定义在系统将Deployment报告为[Failed](#Failed)——condition为`Type=Progressing`且`Status=False`且`Reason=ProgressDeadlineExceeded`——前需要等待的秒数。Deployment控制器会不断重试。默认值是600。在后续的版本中，如果实现了自动回滚，出现这种condition后Deployment控制器就要对Deployment进行回滚。
+
+如果设置了这个值，必须要大于`.spec.minReadySeconds`。
+
+### minReadySeconds
+
+唉，`.spec.minReadySeconds`也是可选的，用来定义新建的Pod没有容器崩溃的情况下至少要保持就绪状态的秒数，在此之后才会被认为是可用的。默认是0（只要就绪了，那就可用了）。对于什么是就绪，可以去看[容器探针（probe）](../泡德（Pod）/Pod生命周期.md#容器探针)。
+
+### rollbackTo
+
+在`extensions/v1beta1`和`apps/v1beta1`的API版本中，`.spec.rollbackTo`已经被标记成过期字段了，从`apps/v1beta2`开始就彻底不支持了。作为替代方案，可以使用`kubectl rollout undo`来[回滚到上一个版本](#回滚到之前的版本)。
+
+### revisionHistoryLimit
+
+Deployment的历史版本是保存在它控制的ReplicaSet中的。
+
+唉~~~~~~，`.spec.revisionHistoryLimit`是个可选字段，指定可以用来回滚的旧ReplicaSet数量。这些旧的ReplicaSet会占用`etcd`的资源，并且一坨一坨地出现在`kubectl get rs`的返回结果中。每个Deployment版本的信息保存在它的ReplicaSet中；因此，删掉某个旧的ReplicaSet，你就丧失了回滚到那个版本的机会。默认值是10，理想的值应该基于Deployment发版的频率和稳定性来定。
+
+更特殊的情况时，把这个值设为0，所有0副本的旧ReplicaSet都会被删掉。这时，新的滚动发布就无法回滚了，因为版本历史信息都没了。
+
+### paused
+
+`.spec.paused`是一个可选的布尔值，用来暂停和恢复Deployment。暂停和非暂停的区别在于，对于暂停状态下的Deployment，修改PodTemplateSpec不会触发滚动发布。新建的Deployment状态都是非暂停状态。
