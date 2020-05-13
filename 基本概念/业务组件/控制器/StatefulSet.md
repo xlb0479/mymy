@@ -112,3 +112,25 @@ StatefulSet的Pod都有一个唯一的标识，包含一个序号、一个稳定
 比如StatefulSet有N个副本，每个Pod都会有一个整数序号，从0开始到N-1，在StatefulSet中是唯一的。
 
 ### 稳定的网络ID
+
+StatefulSet中的每个Pod，会基于StatefulSet的名字以及Pod自身的序号来生成自己的主机名。结构为`$(statefulset name)-$(ordinal)`。上面的例子中创建的三个Pod分别是`web-0,web-1,web-2`。StatefulSet通过[Headless Service]()来控制Pod的域名。域名格式为：`$(service name).$(namespace).svc.cluster.local`，其中，“cluster.local”是集群的域名。每个Pod出生之后，会匹配一个DNS子域名，格式为：`$(podname).$(上层service域名)`，其中上层Service域名由StatefulSet中的`serviceName`字段定义。
+
+在[限制](#限制)中说过，需要你来创建[Headless Service]()，为Pod提供网络身份。
+
+下面列出了一些集群域、Service名、StatefulSet名的组合，以及它们是如何影响Pod的DNS域名的。
+
+集群域|Service名（ns/name）|StatefulSet名（ns/name）|StatefulSet域|Pod DNS|Pod主机名
+-|-|-|-|-|-
+cluster.local|default/nginx|default/web|nginx.default.svc.cluster.local|web-{0..N-1}.nginx.default.svc.cluster.local|web-{0..N-1}
+cluster.local|foo/nginx|foo/web|nginx.foo.svc.cluster.local|web-{0..N-1}.nginx.foo.svc.cluster.local|web-{0..N-1}
+kube.local|foo/nginx|foo/web|nginx.foo.svc.kube.local|web-{0..N-1}.nginx.foo.svc.kube.local|web-{0..N-1}
+
+>**注意**：除非有[其他配置]()，否则集群域都是`cluster.local`。
+
+### 稳定的存储
+
+k8s会为每个VolumeClaimTemplate创建一个[持久卷（PersistentVolume）]()。在上面nginx的栗子中，每个Pod都会得到一个持久卷，它的StorageClass为`my-storage-class`，且分配了1Gb的空间。如果没有指定StorageClass，就用默认的StorageClass。当Pod调度到一个节点上之后，它的`volumeMounts`就会挂载持久卷以及持久卷Claim。注意，Pod持久卷Claim对应的持久卷，在Pod或StatefulSet删除后，不会被自动删除。这个必须要手动删除。
+
+### Pod标签
+
+当StatefulSet[控制器](../../集群架构/控制器.md)创建了一个Pod，它会有一个标签`statefulset.kubernetes.io/pod-name`，设置为Pod的名字。这个标签使得Service可以跟StatefulSet中的特定Pod结合起来。
