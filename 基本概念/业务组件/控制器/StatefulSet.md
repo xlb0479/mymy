@@ -134,3 +134,60 @@ k8s会为每个VolumeClaimTemplate创建一个[持久卷（PersistentVolume）](
 ### Pod标签
 
 当StatefulSet[控制器](../../集群架构/控制器.md)创建了一个Pod，它会有一个标签`statefulset.kubernetes.io/pod-name`，设置为Pod的名字。这个标签使得Service可以跟StatefulSet中的特定Pod结合起来。
+
+## 部署和伸缩的保障
+
+- 对于一个N副本的ReplicaSet，Pod在部署的时候，是按从0到N-1的顺序来的。
+- Pod被删除时，时倒序停止的，从N-1到0。
+- 当一个Pod被伸缩之前，它的前继Pod必须是Running且Ready的。
+- Pod被停止之前，它的后续Pod必须已经处于完全停止的状态。
+
+在StatefulSet中最好不要把`pod.Sepc.TerminationGracePeriodSeconds`设置成0。这么干，它真的不安全，真别这么搞。更多解释在[强制删除StatefulSet的Pod]()。
+
+当上面nginx的栗子创建之后，三个Pod按照web-0、web-1、web-2的顺序进行部署。web-1会等到web-0变为[Running且Ready](../泡德（Pod）/Pod生命周期.md)之后才开始部署，同样，web-2也是等到web-1变为Running且Ready才开始部署。如果web-1变成了Running且Ready，web-2还没开始部署，但是这时候web-0突然挂了，那么web-2会等到web-0重新启动、变为Running且Ready后再开始部署。怎么样，是不是朗朗上口？
+
+在一切都部署好了之后，如果用户想改成`replicas=1`，web-2是第一个被停掉的Pod。web-1会等到web-2完全停掉、被删除之后再开始停止。如果web-2完全停掉，再web-1还没停止之前，web-0突然挂了，web-1会等到web-0变为Running且Ready之后再开始停止。
+
+### Pod管理策略
+
+从k8s的1.7版本开始，StatefulSet可以使用`.spec.podManagementPolicy`字段，可以在保障唯一性和身份标识的前提下，放松顺序性的相关限制。
+
+#### OrderedReady
+
+`OrderedReady`是默认的。即[上面](#部署和伸缩的保障)描述的内容。
+
+#### Parallel
+
+`Parallel`告诉StatefulSet的控制器可以并行地启动或停止Pod，不用等到Pod变为Running且Ready或完全停止再继续进行。这个策略只会影响伸缩，不会影响更新。
+
+## 更新策略
+
+从k8s的1.7版本开始，可以使用`.spec.updateStrategy`字段对容器、标签、资源请求数/限制以及注解等更新触发的滚动更新进行配置或者关闭。
+
+### OnDelete
+
+`OnDelete`策略实现了遗留的（1.6及以前）行为。当`.spec.updateStrategy.type`设置为`OnDelete`时，StatefulSet控制器不会自动更新Pod。`.spec.template`发生变更后，用户必须手动删除Pod，触发控制器自动创建Pod，才能让新的配置生效。
+
+### RollingUpdate
+
+`RollingUpdate`为Pod实现了自动的滚动更新。它是`.spec.updateStrategy`的默认值。当`.spec.updateStrategy.type`等于`RollingUpdate`时，StatefulSet控制器会自动删除并重建Pod。按照Pod停止的顺序（序号倒序），每次更新一个Pod。等前一个Pod变为Running且Ready之后再更新下一个Pod。
+
+#### 分区
+
+可以用`.spec.updateStrategy.rollingUpdate.partition`对`RollingUpdate`策略进行分区。如果指定了分区，当`.spec.template`发生变更后，只有序号大于等于分区号的Pod才会被更新。所有序号小于分区号的Pod都按兵不动，即便把它们删了也是如此，它们依然会按照上一个版本进行重建。如果`.spec.updateStrategy.rollingUpdate.partition`大于`.spec.replicas`，`.spec.template`的变更对Pod就没有影响了。大部分情况下你用不到分区功能，只有比如你想预发布、灰度发布、分阶段更新的时候可能会用到。
+
+#### 强制回滚
+
+如果[滚动更新](#RollingUpdate)使用了默认的[Pod管理策略](Pod管理策略)（`OrderedReady`），有的时候可能会陷入异常状态，需要人工干预进行修复。
+
+比如你更新了Pod模板导致Pod可能永远起不来（比如二进制文件损坏或应用配置错误），StatefulSet会停止滚动发布并持续等待状态。
+
+这时，只是撤销Pod模板更改还不够。由于[已知的问题](https://github.com/kubernetes/kubernetes/issues/67250)，在StatefulSet进行回滚之前，会一直等待这个错误的Pod变成Ready（永远不会发生）。
+
+撤销了Pod模板更改之后，必须删除那些StatefulSet已经按照错误配置创建出来的Pod。在这之后，StatefulSet才会开始用撤销更改后的模板来重建Pod。
+
+## 下一步……
+
+- 学习[部署有状态应用]()。
+- 学习[用StatefulSet部署Cassandra]()。
+- 实战[运行多副本的有状态应用]()。
