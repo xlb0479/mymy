@@ -152,3 +152,46 @@ Key|效果|版本|描述
 `node.kubernetes.io/memory-pressure`|NoSchedule|1.8+|
 `node.kubernetes.io/unschedulable`|NoSchedule|1.12+|默认调度器会容忍不可调度属性。
 `node.kubernetes.io/network-unavailable`|NoSchedule|1.12+|DaemonSet的Pod使用主机网络，默认调度器会容忍网络不可用的属性。
+
+## 与守护进程Pod通信
+
+有这么几种模式，跟DaemonSet中的Pod进行通信：
+
+- **推数据**：让DaemonSet中的Pod主动去更新其他的一些服务，比如一个统计库。它们不需要客户端。
+- **节点IP和已知的端口**：DaemonSet中的Pod可以使用`hostPort`，所以Pod是可以用节点IP来访问的。客户端可以通过某种方式得到节点的IP列表，按照约定配置好需要访问的端口，就好了。
+- **DNS**：用同样的Pod选择器建一个[Headless Service]()，用`endpoints`来发现DaemonSet，还可以从DNS中得到多个A记录。
+- **Service**：用同样的的Pod选择器创建一个服务，通过服务可以随机访问到一个节点上的Pod。（无法指定访问特定节点。）
+
+## 更新DaemonSet
+
+如果节点标签改了，DaemonSet会自动在新匹配到的节点上创建Pod，删除不匹配节点上的Pod。
+
+可以修改DaemonSet创建的Pod。但并不是所有字段都能改。更主要的是，当新增了一个节点时（即便是用了同样的名字），DaemonSet控制器依然会用最一开始那种Pod模板来创建Pod。
+
+你当然可以删除DaemonSet。如果在`kubectl`命令中增加了`--cascade=false`，删除时不会删除Pod。如果你又建了一个拥有相同选择器的DaemonSet，新的DaemonSet会收养已有的Pod。如果有Pod需要被替换，DaemonSet会根据`updateStrategy`来替换Pod。
+
+还可以为DaemonSet执行[滚动更新]()。
+
+## 替代方案
+
+### 初始化脚本
+
+守护进程这种东西，自然可以直接运行在节点上（比如用`init`、`upstartd`、`systemd`）。没错，这样没有问题。但是用DaemonSet有这么几个好处：
+
+- 可以像普通应用一样监控和收集Daemon的日志。
+- 和普通应用一样，使用相同的配置语言和小工具（比如Pod模板和`kubectl`）。
+- 在同其中运行Daemon，可以做资源限制，可以做资源隔离。当然，这个也可以通过把Daemon运行在普通容器中来实现，而不是Pod（比如直接用Docker来运行）。
+
+### 果Pod
+
+可以指定个别节点来直接创建Pod。但是DaemonSet可以替换那些被删除或停止的Pod，比如节点异常或者节点分离维护，比如内核升级。出于这些原因，你应该用DaemonSet，而不是一个一个去建Pod。
+
+### 静态Pod
+
+创建Pod的时候，可以把写好的文件放到Kubelet监听的某个文件夹下。这种方式称为[静态Pod]()。跟DaemonSet不同，静态Pod无法用kubectl或者其他k8s的API来管理。静态Pod不依赖apiserver，这样就可以在集群启动阶段发挥它的优势。更重要的是，静态Pod可能在以后被弃用了。（竟然说了这么半天）。
+
+### Deployment
+
+DaemonSet跟[Deployment](Deployment.md)很像，它们都可以创建Pod，而且这些Pod都是不希望被停掉的（比如web服务器或者存储服务器）。
+
+对于Deployment，可以用它来创建无状态的服务，比如前端服务，此时，副本的伸缩、滚动更新，要比将它们控制在每个节点上来说，是更加重要的。使用DaemonSet，是因为我们要将Pod的每个副本运行在所有节点或某些节点上，并且要让这些Pod在其他Pod之前启动起来。
