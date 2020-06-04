@@ -9,6 +9,7 @@
 - [跑个栗子](#跑个栗子)
 - [编写Job定义](#编写Job定义)
 - [Pod和容器的错误处理](#Pod和容器的错误处理)
+- [Job的停止与清理](#Job的停止与清理)
 - [自动清理已完成的Job](#自动清理已完成的Job)
 - [Job设计模式](#Job设计模式)
 - [高级用法](#高级用法)
@@ -196,5 +197,106 @@ Pod中的容器可能会因为各种原因出现异常，比如仅仅时由于�
 > **注意**：在1.12版本前依然存在问题[#54870](https://github.com/kubernetes/kubernetes/issues/54870)
 
 > **注意**：如果Job的`restartPolicy = "OnFailure"`，此时一定要记住，当补偿计数到达上限时，会立即停掉Job下的容器。这可能会让Job的调试非常困难。我们建议在调试Job时设置`restartPolicy = "Never"`，或者使用额外的日志系统，保证错误的Job输出不会突然丢失。
+
+## Job的停止与清理
+
+Job完成后就不会再创建Pod了，但也不会删除它们。之所以留着它们的狗命，就是为了让你看看日志啥的，比如错误、警告或者其他调试信息。Job对象本身同样也是不会被删除，这样你还可以继续看看它的状态信息啥的。旧的Job要由用户决定是否删除。可以用`kubectl`（比如`kubectl delete jobs/pi`或`kubectl delete -f ./job.yaml`）来删除Job。当Job删除后，它的Pod也就随之灰飞烟灭了。
+
+默认情况下Job都是一路向西狂奔不止的，除非Pod异常（`restartPolicy=Never`）或者容器异常退出（`restartPolicy=OnFailure`），这时候Job就会去参考上面说过的`.spec.backoffLimit`了。一旦到达`.spec.backoffLimit`Job就会被标记成失败并且停止所有运行中的Pod。
+
+还有一种停止Job的方法是设置一个活动状态期限。也就为`.spec.activeDeadlineSeconds`设置合适的秒数。`activeDeadlineSeconds`控制着Job的持续时间，跟它创建了多少Pod没有关系。当Job到达`activeDeadlineSeconds`，会停止所有运行中的Pod，Job状态标记为`type: Failed`，以及`reason: DeadlineExceeded`。
+
+这里注意一下，`.spec.activeDeadlineSeconds`的优先级要高于`.spec.backoffLimit`。因此，当到达`activeDeadlineSeconds`时，Job就不会继续对异常的Pod进行重试操作了，即便还没有达到`backoffLimit`。
+
+栗子：
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pi-with-timeout
+spec:
+  backoffLimit: 5
+  activeDeadlineSeconds: 100
+  template:
+    spec:
+      containers:
+      - name: pi
+        image: perl
+        command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"]
+      restartPolicy: Never
+```
+
+这里同样也要注意一下，Job的Spec和[Pod模板的Spec](../泡德（Pod）/初始化容器.md#细节)中都有`activeDeadlineSeconds`。设置的时候一定要放到正确的层级中。
+
+另外需要牢记的是，`restartPolicy`是用在Pod上的，不是Job的：一旦Job的状态变成`type: Failed`，是不存在什么自动重启的机制的。这就是说，如果是因为触发了`.spec.activeDeadlineSeconds`和`.spec.backoffLimit`，Job就会永久性的停止，必须人工干预进行处理。
+
+## 自动清理已完成的Job
+
+已完成的Job一般都没有什么存在的价值了。留着它们的狗命只会为apiserver添加负担。如果Job是由更高层的控制器直接管理，比如[CronJob](CronJob.md)，CronJob会基于容量策略来清理Job。
+
+### TTL机制
+
+**功能状态**：`Kubernetes v1.12 [alpha]`
+
+另一种自动清理Job的方法是使用[TTL控制器](TTL控制器.md)，也就是设置Job的`.spec.ttlSecondsAfterFinished`字段。
+
+当TTL控制器对Job进行清理时，它会对Job进行级联删除，比如删除它的依赖对象，比如Job中的各种Pod。Job被删除的时候，各种finalizer依然会按照规章制度来执行。
+
+栗子：
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pi-with-ttl
+spec:
+  ttlSecondsAfterFinished: 100
+  template:
+    spec:
+      containers:
+      - name: pi
+        image: perl
+        command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"]
+      restartPolicy: Never
+```
+
+在`pi-with-ttl`这个Job结束`100`秒后，就会被自动删除了。
+
+如果将这个字段设置为`0`，Job结束后就会立即被删除。如果不设置该字段，也就不会被自动删除了。
+
+注意目前这个TTL机制还是alpha阶段，要使用特性门`TTLAfterFinished`。可以学习[TTL控制器](TTL控制器.md)，了解更多新闻资讯。
+
+## Job设计模式
+
+Job可以用来实现可靠的Pod并行执行机制。Job不是为那种紧密联系的并行进程而设计，比如常见的科学计算。它的意义更多是在于并行处理一组相互独立但又有些关系的*工件*。比如要发送一大堆email，要渲染的一组框架，要转码的一堆文件，或者是对NoSQL中某个范围的key进行扫描，等等。
+
+在较复杂的系统中，会存在多种不同的工件集合。这里我们只考虑它们中的某一组，用户想要一起处理——*批处理任务*。
+
+关于并行计算有这么几种不同的模式，各有利弊。权衡之处在于：
+
+- 每个工件一个任务VS一个任务处理所有工件。对于工件数量庞大的场景，肯定是后者更好。前者增加了用户和系统的负担，弄出来一大堆Job对象。
+- Pod数量等于工件数量VS每个Pod可以处理多个工件。前者通常不怎么需要修改现有代码和容器。后者用于工件数量更大的场景，原因跟上一条是一样的。
+- 基于工作队列。这种场景需要一个队列服务，需要修改已有程序或容器，让它们走队列。上面的方法更适合利用那些已存在的容器应用。
+
+关于这几条我们总结到了下面，其中2~4列对应上面列出的权衡场景。每个模式的名字可以点击直接跳到相关的栗子上，有更详细的内容。
+
+模式|单个Job对象|Pod数量少于工件数量？|使用已有的程序？|能用在Kube 1.1中？
+~|~|~|~|~
+[Job模板扩展]()|||√|√
+[队列，每个工件一个Pod]()|√||偶尔|√
+[队列，Pod数量不定]()|√|√||√
+单一Job且任务固定|√||√|
+
+当你设置了`.spec.completions`，Job控制器创建的每个Pod都具有相同的[`.spec`](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#spec-and-status)。这就是说为一个任务创建的所有Pod都有相同的命令行内容和相同的镜像、数据卷，以及（几乎）相同的环境变量。这些模式就是为不同的类型的工作来构建不同的Pod组织方式。
+
+下表针对每种模式列出了`.spec.parallelism`和`.spec.completions`的设置方式。这里的`W`代表工件的数量。
+
+模式|`.spec.completions`|`.spec.parallelism`
+~|~|~
+[Job模板扩展]()|1|必须是1
+[队列，每个工件一个Pod]()|W|任意
+[队列，Pod数量不定]()|1|任意
+单一Job且任务固定|W|任意
 
 ### 制定你自己的Pod选择器
