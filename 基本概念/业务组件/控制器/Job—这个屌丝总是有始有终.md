@@ -299,4 +299,75 @@ Job可以用来实现可靠的Pod并行执行机制。Job不是为那种紧密�
 [队列，Pod数量不定]()|1|任意
 单一Job且任务固定|W|任意
 
+## 高级用法
+
 ### 制定你自己的Pod选择器
+
+一般来说创建Job对象的时候是不需要指定`.spec.selector`的。系统会自动为Job对象添加这个字段。会自动选择一个不会跟其它Job冲突的选择器。
+
+但在一些特殊情况下可能你想覆盖一下这种默认的选择器。如果你想实现这种令人不齿的想法，那你就去给Job设置一下`.spec.selector`吧。
+
+当你这么干的时候你可是得小心点儿。如果你自己弄的这个选择器对当前Job来说不是唯一的，并且沾染了其他无关的Pod，那这些无关的Pod就可能被删除，或者当前Job把这些无关的Pod算入完成计数中，再或者导致当前或者其他Job不再继续创建Pod，不再正常执行。如果用了这种不唯一的选择器，其他控制器（比如ReplicationController）和它们的Pod可能也会出现各种紊乱症状。k8s不会阻止你选择这种错误的`.spec.selector`。
+
+下面举了一个可能需要这种设置的场景。
+
+假如现在已经有一个`old`Job在运行中。你希望当前的Pod继续运行，同时，后续创建的Pod用一个不同的Pod模板，Job也弄个新名字。你无法更新当前Job，因为这些字段都是不可更新的。所以，你苦思冥想，执行`kubectl delete jobs/old --cascade=false`，删掉了`old`这个Job，但是*让它的Pod继续运行*。在删除之前，你记了一下它的选择器：
+
+```shell script
+kubectl get job old -o yaml
+```
+
+```yaml
+kind: Job
+metadata:
+  name: old
+  ...
+spec:
+  selector:
+    matchLabels:
+      controller-uid: a8f3d00d-c6d2-11e5-9f87-42010af00002
+  ...
+```
+
+r然后你建了一个名为`new`的新Job，并且设置了同样的选择器。因为当前Pod有`controller-uid=a8f3d00d-c6d2-11e5-9f87-42010af00002`这个标签，所以它们会被`new`这个Job所控制。
+
+在新的Job中你需要设置`manualSelector: true`，因为你不需要使用系统自动创建的选择器。
+
+```yaml
+kind: Job
+metadata:
+  name: new
+  ...
+spec:
+  manualSelector: true
+  selector:
+    matchLabels:
+      controller-uid: a8f3d00d-c6d2-11e5-9f87-42010af00002
+  ...
+```
+
+新的Job会有一个不同的uid`a8f3d00d-c6d2-11e5-9f87-42010af00002`。设置`manualSelector: true`就是告诉系统你知道自己在干什么，并且允许错误情况的发生。
+
+## 其他方案
+
+### 果Pod
+
+如果是果Pod，当Pod所在节点重启或出错，Pod也就会被停掉并且没有重启。但如果是Job的话，它就会创建新的Pod来替代已经停掉的Pod。基于这种原因，我们建议你使用Job而不是果Pod，即便你只需要运行一个Pod。
+
+### ReplicationController
+
+Job和[Replication Controller](ReplicationController.md)的关系有点互补。副本控制器用来管理那些一般不想停掉的Pod（比如Web服务），而Job却是管理那些总是会停掉的Pod（比如批处理任务）。
+
+我们在[Pod生命周期](../../业务组件/泡德（Pod）/Pod生命周期.md)中谈到过，`Job`*仅仅*适用于那些`RestartPolicy`等于`OnFailure`或`Never`的Pod。（如果`RestartPolicy`没有设置，默认是`Always`。）
+
+### 用单个Job来启动控制器Pod
+
+还有一种模式就是用一个Job来创建一个Pod，而这个Pod又会创建其他的Pod，这种Pod有点类似于自定义的控制器。这会提供极大的灵活性，但是可能上手有点困难，和k8s的集成度也不是很高。
+
+这种Job的一个具体例子是用Job启动一个Pod，Pod中运行一个脚本，然后启动了一个Spark的master控制器（见[Spark例子]()），运行了一个Spark驱动，最后还要执行清理工作。
+
+这种用法的好处在于，整个执行过程由Job对象来保证一定可以完成，同时又将创建Pod以及工作量分配的权利留在自己手里。
+
+## Cron
+
+可以用[`CronJob`](CronJob.md)来创建一个在执行时间/日期里运行的Job，跟Unix的`cron`工具有点类似。
