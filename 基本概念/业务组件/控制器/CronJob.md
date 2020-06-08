@@ -51,7 +51,25 @@ spec:
 
 一个CronJob会在每次调度的时候创建一个*左右*的Job对象。我们说“左右”是因为有些情况下可能会创建两个Job，或者根本不创建Job。我们会尽量减少这种情况出现，但是无法完全避免。因此Job应当是*幂等的*。
 
-如果把`startingDeadlineSeconds`s设置成一个很大的值，或者不设置（默认），并且`concurrencyPolicy`等于`Allow`，Job的执行永远都是保证在至少一个。
+如果把`startingDeadlineSeconds`设置成一个很大的值，或者不设置（默认），并且`concurrencyPolicy`等于`Allow`，Job的执行永远都是保证在至少一个。
 
-对于每个CronJob，CronJob[控制器](../../集群架构/控制器.md)会检查从上一次调度至今一共丢失了多少次调度。如果丢失次数超过了100次，她就不会再启动Job了，并且记录一个错误日志
+对于每个CronJob，CronJob[控制器](../../集群架构/控制器.md)会检查从上一次调度至今一共丢失了多少次调度。如果丢失次数超过了100次，它就不会再启动Job了，并且记录一个错误日志
 
+```text
+Cannot determine if job needs to be started. Too many missed start time (> 100). Set or decrease .spec.startingDeadlineSeconds or check clock skew.
+```
+
+需要注意的是，如果你给`startingDeadlineSeconds`字段设置了值（非`nil`），控制器计算丢失Job是根据`startingDeadlineSeconds`至当前时间进行计算的。也就是说，比如`startingDeadlineSeconds`是`200`，每次就是计算过去200秒内丢了多少个Job。
+
+当CronJob在本该调度的时间却创建失败，那就认为这个Job丢失了。比如把`concurrencyPolicy`设置为`Forbid`，当CronJob调度触发，但是上一次调度依然在执行中的话，这次的Job就丢掉了。
+
+举个栗子，比如从`08:30:00`开始CronJob需要每分钟调度一个新的Job，没有设置`startingDeadlineSeconds`。假设CronJob控制器在`08:29:00`到`10:21:00`这段时间挂掉了，那么Job就不会再启动了，因为丢失的Job数量已经超过了100。
+
+为了进一步解释这个东西，我们再次假设一个CronJob从`08:30:00`开始每分钟要调度一个新的Job，并且`startingDeadlineSeconds`设置为200秒。而CronJob控制器恰巧又在同样的时间段挂掉了（`08:29:00`到`10:21:00`），那么新的Job会在10:22:00开始运行。这是因为此时的控制器只会计算过去200秒丢失的Job数量（这里是3个），而不是从上次调度开始计算的。
+
+CronJob只是负责在需要调度的时间创建Job，而Job负责管理它的Pod。
+
+## 下一步……
+
+[Cron表达式](https://pkg.go.dev/github.com/robfig/cron?tab=doc#hdr-CRON_Expression_Format)，用于CronJob的`schedule`字段。
+关于如何创建和使用CronJob，具体的栗子，去看[使用CronJob运行自动化任务]()。
