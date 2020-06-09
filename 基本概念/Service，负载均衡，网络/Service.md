@@ -12,7 +12,7 @@
 - [自定义IP](#自定义IP)
 - [服务发现](#服务发现)
 - [Headless Service](#HeadLess-Service)
-- [服务发布（ServiceType）](#服务发布（ServiceType）)
+- [服务发布（ServiceType）](#服务发布ServiceType)
 - [缺陷](#缺陷)
 - [虚拟IP的实现](#虚拟IP的实现)
 - [API对象](#API对象)
