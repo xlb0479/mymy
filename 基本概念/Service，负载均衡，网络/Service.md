@@ -121,6 +121,36 @@ Endpoint对象的名字必须是有效的[DNS子域名](../概要/Kubernetes对�
 
 如果Service的类型为ExternalName，这是一种无选择器Service特例，它用的是DNS域名。详见本文中的[相关介绍](#ExternalName)。
 
+### EndpointSlice
+
+**功能状态**：`Kubernetes v1.17 [beta]`
+
+EndpointSlice也是一种API资源，它可以提供比Endpoint更好的可伸缩性。尽管概念上可能比较类似，EndpointSlice可以在多个资源上分布网络端点。默认情况下EndpointSlice的端点数量达到100就被认为“满了”，会创建其它的EndpointSlice来存储额外的端点信息。
+
+EndpointSlice还提供了其它的属性和功能，详见[EndpointSlice](EndpointSlice.md)。
+
+### 应用协议
+
+**功能状态**：`Kubernetes v1.18 [alpha]`
+
+可以在每个Service端口上设置AppProtocol字段，用于声明所使用的应用协议。
+
+由于是个alpha阶段的功能，默认这个字段是不启用的。你要想用，需要开启`ServiceAppProtocol`[特性门]()。
+
+## 虚拟IP和服务代理
+
+k8s集群中的每个节点都跑着一个`kube-proxy`。`kube-proxy`负责提供一种虚拟IP实现，除了类型为[`ExternalName`](#ExternalName)的Service外，其他Service都需要用到。
+
+### 为什么不基于DNS做轮询
+
+时不时就会提到这个问题，为什么k8s要依赖代理将入口流量转发到后端。其他方法不香吗？比如配置多个A记录的DNS记录（或者是IPv6的AAAA），然后基于轮询做域名解析？
+
+之所以让Service使用代理，有以下原因：
+
+- 在历史的长河中，DNS在实现的时候经常不理会TTL值，在记录本该过期的时候依然缓存着它们的查询结果。
+- 有些应用做了一次DNS查询缓存一辈子。
+- 即便应用和程序库做了适当的重新解析机制，如果TTL过低或直接是零值，会对DNS造成很高的负载，很难管理。
+
 ## 多端口
 
 ## 自定义IP
@@ -130,6 +160,8 @@ Endpoint对象的名字必须是有效的[DNS子域名](../概要/Kubernetes对�
 ## Headless Service
 
 ## 服务发布（ServiceType）
+
+### ExternalName
 
 ## 缺陷
 
