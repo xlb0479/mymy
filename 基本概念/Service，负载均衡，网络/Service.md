@@ -151,6 +151,18 @@ k8s集群中的每个节点都跑着一个`kube-proxy`。`kube-proxy`负责提�
 - 有些应用做了一次DNS查询缓存一辈子。
 - 即便应用和程序库做了适当的重新解析机制，如果TTL过低或直接是零值，会对DNS造成很高的负载，很难管理。
 
+### 用户空间代理模式
+
+这种模式下，kube-proxy通过监视k8s的master来获取Service和Endpoint对象的变化。对于每个Service它会在本地节点上打开一个端口（随机选择）。所有连接到这个“代理端口”上的链接，都会被代理到Service的其中一个后端Pod上（基于Endpoint信息）。kube-proxy会基于Service的`SessionAffinity`来判断该使用哪个Pod。
+
+最后要说的是，这种模式会在iptables中生成各种规则，捕获那些指向Service的`clusterIP`（虚拟IP）和`port`的流量。这些规则会将流量定向到代理端口，然后进一步代理到后端Pod上。
+
+用户空间代理模式在默认情况下是根据轮询算法来选择后端Pod的。
+
+![services-userspace-overview](img/services-userspace-overview.svg)
+
+### **iptables**代理模式
+
 ## 多端口
 
 ## 自定义IP
