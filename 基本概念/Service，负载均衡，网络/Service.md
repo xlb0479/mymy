@@ -159,9 +159,21 @@ k8s集群中的每个节点都跑着一个`kube-proxy`。`kube-proxy`负责提�
 
 用户空间代理模式在默认情况下是根据轮询算法来选择后端Pod的。
 
-![services-userspace-overview](img/services-userspace-overview.svg)
+![services-userspace-overview.svg](img/services-userspace-overview.svg)
 
 ### **iptables**代理模式
+
+这种模式下，kube-proxy监视k8s的control plane来获取Service和Endpoint对象的变更信息。对于每个Service来说，它会添加对应的iptables规则，捕获流向Service的`clusterIP`和`port`的流量，然后将流量重定向到其中一个后端上。对于每个Endpoint对象，它也会生成iptables规则，选择其中一个后端Pod。
+
+该模式默认情况下是随机选择后端的。
+
+使用iptables处理流量，系统负载更小，因为流量是交给Linux的netfilter来处理的，不需要在用户空间和内核空间来回切换。这种方式相对来说更加可靠。
+
+该模式下，如果选择的第一个Pod没有响应，那么链接就会断掉。这就跟用户空间模式不太一样了：在用户空间模式下，会自动选择其他后端Pod进行重试。
+
+可以用Pod的[就绪探针](../业务组件/泡德（Pod）/Pod生命周期.md#容器探针)来判断后端Pod是否OK，这样在该模式下，iptables中就只会保留那些健康的Pod。也就避免了将流量发送到异常Pod上的问题。
+
+![services-iptables-overview.svg](img/services-iptables-overview.svg)
 
 ## 多端口
 
