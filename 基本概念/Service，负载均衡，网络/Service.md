@@ -227,7 +227,38 @@ spec:
 
 ## 自定义IP
 
+创建Service的时候也可以自定义Service的集群IP。也就是设置`.spec.clusterIP`字段。比如你想重用一个已有的DNS记录，或者说某个遗留系统配的是固定IP，很难改变的那种。
+
+设置的IP地址必须是有效的IPv4或IPv6地址，必须包含在apiserver的`service-cluster-ip-range`范围内。如果你设置的clusterIP无效，apiserver会返回HTTP状态码422，表示创建过程中出现问题。
+
 ## 服务发现
+
+对于如何发现一个Service，k8s主要由两种模式——环境变量和DNS。
+
+### 环境变量
+
+当一个Pod运行起来之后，kubelet会将每一个活动Service的相关环境变量加到Pod容器中。它既可以兼容[Docker连接](https://docs.docker.com/network/links/)变量（见[makeLinkVariables](https://github.com/kubernetes/kubernetes/blob/master/pkg/kubelet/envvars/envvars.go#L72)），也支持简单的`{SVCNAME}_SERVICE_HOST`和`{SVCNAME}_SERVICE_PORT`，其中Service名字是全大写，减号转成下划线。
+
+比如，`“redis-master”`这个服务暴露了TCP端口6379，分配的集群IP是10.0.0.11，就会生成以下环境变量：
+
+```properties
+REDIS_MASTER_SERVICE_HOST=10.0.0.11
+REDIS_MASTER_SERVICE_PORT=6379
+REDIS_MASTER_PORT=tcp://10.0.0.11:6379
+REDIS_MASTER_PORT_6379_TCP=tcp://10.0.0.11:6379
+REDIS_MASTER_PORT_6379_TCP_PROTO=tcp
+REDIS_MASTER_PORT_6379_TCP_PORT=6379
+REDIS_MASTER_PORT_6379_TCP_ADDR=10.0.0.11
+```
+
+>**注意**：当你的Pod需要访问一个Service时，如果你想用环境变量的方式将Service的端口和集群IP暴露给Pod，那你必须在Pod创建*之前*先创建好Service。
+>否则Pod中就不会注入Service的环境变量。如果你只用DNS做Service的发现，那你就不用操心这种顺序问题了。
+
+### DNS
+
+你，可以（或者说总是应该）使用[add-on](https://kubernetes.io/docs/concepts/cluster-administration/addons/)的方式为k8s集群设置一个DNS服务。
+
+
 
 ## Headless Service
 
