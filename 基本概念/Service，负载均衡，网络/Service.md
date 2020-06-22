@@ -161,7 +161,7 @@ k8s集群中的每个节点都跑着一个`kube-proxy`。`kube-proxy`负责提�
 
 ![services-userspace-overview.svg](img/services-userspace-overview.svg)
 
-### **iptables**代理模式
+### `iptables`代理模式
 
 这种模式下，kube-proxy监视k8s的control plane来获取Service和Endpoint对象的变更信息。对于每个Service来说，它会添加对应的iptables规则，捕获流向Service的`clusterIP`和`port`的流量，然后将流量重定向到其中一个后端上。对于每个Endpoint对象，它也会生成iptables规则，选择其中一个后端Pod。
 
@@ -175,7 +175,55 @@ k8s集群中的每个节点都跑着一个`kube-proxy`。`kube-proxy`负责提�
 
 ![services-iptables-overview.svg](img/services-iptables-overview.svg)
 
+### IPVS代理模式
+
+**功能状态**：`Kubernetes v1.11 [stable]`
+
+在`ipvs`模式下，kube-proxy监视着k8s的Service和Endpoint，根据变化情况去调用`netlink`接口来创建IPVS规则，并周期性地将这些规则和Service以及Endpoint进行同步。这种控制循环可以确保IPVS的状态能够匹配实际状态。当访问一个Service时，IPVS就会把流量转发到其中一个后端Pod上。
+
+IPVS代理模式是基于netfilter的钩子函数，这跟iptables模式有点类似，但IPVS在内核空间工作的同时，还使用了哈希表作为底层数据结构。这就意味着IPVS模式在流量转发上比iptables模式的延迟更低，同步代理规则时的性能更好。相较于其他代理模式，IPVS可支持的网络吞吐量也更高。
+
+对于后端Pod的流量均衡方式，IPVS还提供了很多选项：
+
+- `rr`：轮询
+- `lc`：最小连接数（最少的打开连接的数量）
+- `dh`：目标地址哈希
+- `sh`：源地址哈希
+- `sed`：最小期望延迟
+- `nq`：从不排队
+
+>**注意**：要想让kube-proxy运行在IPVS模式下，必须在启动它之前先开启节点上的IPVS。kube-proxy使用IPVS模式启动时会检查IPVS内核模块是否可用。如果没有发现该内核模块，kube-proxy会退回到iptables的代理模式。
+
+![services-ipvs-overview.svg](img/services-ipvs-overview.svg)
+
+这种模式下，Service的IP:Port上的流量会被代理到合适的后端Pod上，对于客户端来说是完全透明的。
+
+如果你想让某个客户端的连接始终被转发到同一个Pod上，可以使用基于客户端IP的session粘性，将`service.spec.sessionAffinity`设置为“ClientIP”（默认是“None”）。还可以设置session粘性的超时时间`service.spec.sessionAffinityConfig.clientIP.timeoutSeconds`。（默认是10800，也就是3个小时，所以请不要一直盯着屏幕3个小时不换台）。
+
 ## 多端口
+
+有些服务需要暴露多个端口。k8s允许在Service对象中配置多个端口。当你使用了多个端口，必须给所有端口起一个不冲突的名字。比如：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+spec:
+  selector:
+    app: MyApp
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 9376
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 9377
+```
+
+>**注意**：根据k8s的[命名规范](../概要/Kubernetes对象/对象的名字和ID.md)，端口的名字只能包含小写字母数字和`-`减号。必须以字母数字开头结尾。比如`123-abc`和`web`就没问题，但不能是`123_abc`或`-web`。
 
 ## 自定义IP
 
