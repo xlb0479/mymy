@@ -258,17 +258,236 @@ REDIS_MASTER_PORT_6379_TCP_ADDR=10.0.0.11
 
 你，可以（或者说总是应该）使用[add-on](https://kubernetes.io/docs/concepts/cluster-administration/addons/)的方式为k8s集群设置一个DNS服务。
 
+集群范围的DNS，比如一个CoreDNS吧，可以监视新建Service相关的API，为每个Service创建一组DNS记录。如果你在集群中启用了DNS，所有Pod就可以自动使用DNS名来找到Service。
 
+比如在命名空间`“my-ns”`中有一个名为`“my-service”`的Service，control plane和DNS服务就会协同工作，创建一个DNS记录`“my-service.my-ns”`。在`“my-ns”`中的Pod就可以直接用`my-service`这个名字找到Service（用`“my-service.my-ns”`也可以）。
+
+其他命名空间中的Pod就必须要用限定名`my-service.my-ns`。不论用哪种名字，都会解析到Service的集群IP上。
+
+对于命名端口，k8s还可以为Service提供SRV记录值。比如`“my-service.my-ns”`这个Service有一个名为`“http”`的端口，协议设置为`TCP`，那你就可以查询`_http._tcp.my-service.my-ns`的SRV值，从而发现它的`“http”`端口以及IP地址。
+
+要想访问`ExternalName`Service就必须使用k8s的DNS服务。关于这部分的内容可以去看[Pod和Service的DNS](Pod和Service的DNS.md)。
 
 ## Headless Service
 
+有的时候可能你不需要Service提供负载均衡和IP。此时就可以将集群IP（`.spec.clusterIP`）设置为`“None”`，创建所谓的“无头”Service。
+
+对于无头的`Service`，不会为其分配集群IP，kube-proxy也不会打理这种Service，平台层面不会为其提供任何负载均衡或代理机制。DNS的自动配置依赖于Service是否定义了选择器：
+
+### 有选择器
+
+对于有选择器的无头Service，Endpoint控制器会创建`Endpoint`记录，将DNS配置成直接返回`Service`后端的`Pod`地址。
+
+### 无选择器
+
+对于无选择器的无头Service，Endpoint控制器不会创建`Endpoint`记录。但DNS系统会查询并配置以下：
+
+- [ExternalName](#ExternalName)Service的CNAME记录。
+- 对于其他类型的Service，如果有`Endpoint`和Service共享同一个名字，也会创建一条记录。（嗯？这是什么意思？）
+
 ## 服务发布（ServiceType）
+
+对于应用中的某些部分（比如前端应用）你可能需要将Service暴露到外部地址上，可以从集群外访问。
+
+k8s的`ServiceType`可以允许你定义Service的类型。默认类型是`ClusterIP`。
+
+`Type`的值及其作用：
+
+- `ClusterIP`：将Service暴露到集群内部的IP上。这种类型的Service只能在集群内部访问。这也是默认的`ServiceType`。
+- [`NodePort`](#NodePort)：将服务暴露到每个节点IP的固定端口上（`NodePort`）。系统会为这个`NodePort`Service自动创建一个`ClusterIP`Service，前者会路由到后者身上。你可以使用`<NodeIP>:<NodePort>`的方式从集群外部访问这个`NodePort`Service。
+- [`LoadBalancer`](#LoadBalancer)：通过云服务商提供的负载均衡器将Service暴露到外界。会自动创建`NodePort`和`ClusterIP`Service，将外部的负载均衡器路由到它们身上。
+- [`ExternalName`](#ExternalName)：通过`CNAME`记录将Service映射到`externalName`字段指定的名字上（比如`foo.bar.example.com`）。这种类型不会有任何代理机制。
+
+>**注意**：要想使用`ExternalName`类型，必须使用1.7版本的kube-dns或者0.0.8及以后版本的CoreDNS。
+
+你也可以使用[Ingress](Ingress.md)来暴露Service。Ingress并不是一种Service，但它可以用作集群的入口点。它可以让你的某一种资源的路由规则稳定性更好，因为它可以将多个服务暴露到相同的IP地址上。
+
+### NodePort
+
+如果将`type`字段设置为`NodePort`，k8s的control plane会分配一个由`--service-node-port-range`选项（默认30000~32767）指定范围内的端口。每个节点会将这个端口（每个节点上都是同一个端口）代理到你的服务上。可以在Service的`.spec.ports[*].nodePort`字段中看到这个端口的具体值。
+
+如果想用指定IP来代理这个端口，可以用kube-proxy的`--nodeport-addresses`选项来设置指定的IP段；这种奇淫巧技是从1.10版本开始有的。这个选项支持逗号间隔的IP段参数（比如10.0.0.0/8，192.0.2.0/25），让kube-proxy认为这些IP范围是节点的本地地址。
+
+举个栗子，启动kube-proxy时设置`--nodeport-addresses=127.0.0.0/8`，那么kube-proxy就只会为NodePort类型的Service使用环回接口。`--nodeport-addresses`的默认值时一个空列表。这就让kube-proxy把所有的可用网络接口都用于NodePort。（这样也可以跟以前的k8s版本兼容）。
+
+如果你想指定一个端口，那就给`nodePort`字段设置一个值。control plane要么为你分配好你需要的端口，要么就在API调用时报错了。这就意味着你需要自己去提前考虑好可能出现的端口冲突的问题。同时你必须使用有效的端口，必须在指定的端口范围内。
+
+使用NodePort可以让你自己去设计负载均衡方案，可以配置那些k8s还无法支持的环境，或者直接暴露某几个节点的IP出来。
+
+注意这种服务可以使用`<NodeIP>:spec.ports[*].nodePort`和`.spec.clusterIP:spec.ports[*].port`两种方式来访问。（如果设置了kube-proxy的`--nodeport-addresses`，那NodeIP就是根据规则过滤后的IP了。）
+
+例如：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+spec:
+  type: NodePort
+  selector:
+    app: MyApp
+  ports:
+      # By default and for convenience, the `targetPort` is set to the same value as the `port` field.
+    - port: 80
+      targetPort: 80
+      # Optional field
+      # By default and for convenience, the Kubernetes control plane will allocate a port from a range (default: 30000-32767)
+      nodePort: 30007
+```
+
+### LoadBalancer
+
+对于可以支持外部负载均衡器的云服务商来说，可以将`type`字段设置为`LoadBalancer`，为Service分配负载均衡器。负载均衡器的实际创建时异步发生的，分配的负载均衡器的信息在Service的`.status.loadBalancer`字段中。比如这样：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+spec:
+  selector:
+    app: MyApp
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 9376
+  clusterIP: 10.0.171.239
+  type: LoadBalancer
+status:
+  loadBalancer:
+    ingress:
+    - ip: 192.0.2.127
+```
+
+外部负载均衡器的流量直接导向后端的Pod上。由云服务商决定具体的负载均衡算法。
+
+对于这种类型的Service，如果定义了多个端口，所有端口必须使用相同的协议字段，且协议必须是`TCP`、`UDP`或`SCTP`之一。
+
+有些云服务商允许设置`loadBalancerIP`。这种情况下会根据用户指定的`loadBalancerIP`来创建负载均衡器。如果没有指定该字段，会使用临时IP来创建负载均衡器。如果你设置了这个字段但是云服务商却不支持，该字段直接被忽略。
+
+>**注意**：如果你用了SCTP协议，重点关注下面关于LoadBalancer类型的[一些问题](#LoadBalancer类型的Service)。
+
+>**注意**：这里原文时关于**Azure**的一些特殊问题，我就不写了，反正老子不用。
+
+#### 内部负载均衡器
+
+在一些混合环境中，可能有那种对同一个网络中的内部服务流量进行路由的场景。
+
+在水平分割的DNS环境中，需要两个Service分别将外部和内部的流量路由到Endpoint上。
+
+可以在Service上增加以下注解来实现这种功能。具体注解依赖于你所使用的云服务商。这里我就列出几个常用的，其他的就不闹了。
+
+- 阿里云
+
+```yaml
+[...]
+metadata:
+  annotations:  
+    service.beta.kubernetes.io/alibaba-cloud-loadbalancer-address-type: "intranet"
+[...]
+```
+
+- 腾讯云
+
+```yaml
+[...]
+metadata:
+  annotations:  
+    service.kubernetes.io/qcloud-loadbalancer-internal-subnetid: subnet-xxxxx
+[...]
+```
+
+- 百度云
+
+```yaml
+[...]
+metadata:
+    name: my-service
+    annotations:
+        service.beta.kubernetes.io/cce-load-balancer-internal-vpc: "true"
+[...]
+```
+
+- AWS
+
+```yaml
+[...]
+metadata:
+    name: my-service
+    annotations:
+        service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+[...]
+```
+
+#### 下面都是关于云服务商的一些特定问题的解决方案，我就不在这里写了，我的翻译尽量做到只关注k8s本身的东西
 
 ### ExternalName
 
+这种类型的Service可以把Service映射到一个DNS域名上，而非普通的`my-service`或`cassandra`选择器。这种Service需要设置`spec.externalName`。
+
+举个栗子，我们将`prod`命名空间下的`my-service`这个Service映射到`my.database.example.com`上：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+  namespace: prod
+spec:
+  type: ExternalName
+  externalName: my.database.example.com
+```
+
+>**注意**：ExternalName可以接受一个IPv4地址字符串，但是是作为一个数字组成的DNS域名，而不是IP地址。ExternalName不会经由CoreDNS或ingress-nginx解析，因为这个东西本来就是要作为一个完整的DNS域名。如果你想硬编码一个IP地址，可以去用[无头Service](#Headless-Service)。
+
+当查询主机`my-service.prod.svc.cluster.local`时，集群DNS服务会返回一个值为`my.database.example.com`的`CNAME`记录。访问`my-service`的时候看上去跟其他Service没什么两样，但是在DNS层面上有着巨大的差异，因为这里发生的是重定向，而非代理或者转发。后期你可以考虑把数据库挪到集群里，启动Pod，添加合适的选择器或Endpoint，然后修改Service的`type`。
+
+>**警告**：
+>对于一些常见的协议，使用ExternalName的时候可能会遇到问题，包括HTTP和HTTPS。如果你使用ExternalName，集群中客户端使用的主机名并不是ExternalName引用的那个名字。
+>
+>对于需要主机名的协议，这种差异可能会导致错误或无法预料的响应。HTTP请求需要一个`Host:`头，最初的服务端是无法识别的；TLS服务端无法提供跟客户端所连接的主机名匹配的证书。
+
+>**注意**：诸部份的内容要感谢[Alen Komljen](https://akomljen.com/)所写的博文[Kubernetes Tips - Part 1](https://akomljen.com/kubernetes-tips-part-1/)。
+
+### External IP
+
+如果由外部IP地址路由到了集群中的一个或多个节点上，Service可以暴露到这些`externalIPs`上。从这些外部IP（作为目的IP）+Service端口进入集群的流量，会被路由到Service的其中一个Endpoint上。`externalIPs`不是由k8s管理的，需要集群管理员自己去负责。
+
+在具体定义方面，无论哪种Service类型都可以设置`externalIPs`。在下面的栗子中，客户端可以用“`80.11.12.10:80`”（`externalIP:port`）来访问“`my-service`”。
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+spec:
+  selector:
+    app: MyApp
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 9376
+  externalIPs:
+    - 80.11.12.10
+```
+
 ## 缺陷
 
+对于用户空间模式的VIP代理，尽量用在中小规模的集群，但不要用在那种上千个Service的超大集群中。具体为什么可以去看[这里](https://github.com/kubernetes/kubernetes/issues/1107)。
+
+使用用户空间代理访问Service会丢掉数据包中的源IP。这可能会影响某些网络过滤（防火墙）功能。iptables的代理模式不会丢掉集群内访问时的源IP，但是依然会影响那些从负载均衡器或NodePort连进来的客户端。
+
+`Type`字段被设计成了嵌套型的功能——每层加到前一层上。并不是所有云服务商都有这种严格要求（比如GCE不需要`LoadBalancer`必须有`NodePort`，但是AWS就要），但目前的API都是需要的。
+
 ## 虚拟IP的实现
+
+对于那些只是想使用Service的人来说，上面讲的东西已经足够了。但是有一些底层的东西也是值得看上一看的。
+
+### 冲突避免
+
+
 
 ## API对象
 
