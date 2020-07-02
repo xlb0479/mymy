@@ -487,10 +487,101 @@ spec:
 
 ### 冲突避免
 
+k8s主要的设计思想之一是，如果不是你操作错误，那就不应该出问题。对于Service来说就意味着，如果可能会跟其他人的选择冲突，那就不应该让你亲自去指派端口。实际上这种问题就属于一种隔离失败。
 
+既然允许你自己选择Service的端口，那我们必须保证Service之间不能冲突。k8s的做法就是为每个Service分配一个自己的IP。
+
+为了保证每个Service的IP唯一性，在Service创建之前，内部的分配器会自动更新一个保存在[etcd]()中的全局映射关系。这个映射关系对象必须提前注册，才能给Service分配IP，否则创建请求直接失败，返回IP无法分配的错误信息。
+
+在control plane中，由后台控制器来创建这个映射关系（这块需要兼容从旧版本迁移过来的k8，旧版本用的是内存锁）。k8s还会用控制器来检查无效的分配（比如管理员的操作不当），还要清理那些不再使用的IP地址。
+
+### Service的IP地址
+
+跟Pod IP不同，Pod的IP是路由到一个固定的目的地，而Service的IP由多个主机完成应答。实际上，kube-proxy使用了iptables（Linux中的包处理逻辑）来定义*虚拟*IP，根据需要透明地完成流量转发。当客户端连接到VIP，流量会自动传输到合适的Endpoint上。环境变量和DNS中注入的也都是Service的虚拟IP（和端口）。
+
+### 用户空间
+
+想一下我们上面提到过的那个图像处理程序，想不起来就别楞想了。当后端Service创建之后，k8s的master会给它跟配一个虚拟IP，比如说10.0.0.1吧。假设Service的端口是1234，这个Service被集群中的所有kube-proxy实例发现。当某个proxy发现了一个新的Service，它会打开一个随机端口，在iptables中建立从这个虚拟IP到这个新端口的转发规则，并开始接受连接请求。
+
+当某个客户端连到了这个Service的虚拟IP上，iptables就要开始介入了，将相关的数据包都转发到proxy的新端口上。“服务的Proxy”会选择一个后端实例，将客户端的流量代理到后端。
+
+这就意味着Service可以任意选择端口，不用担心冲突的问题。客户端只管链接就好，不用知道到底连的是哪个Pod。
+
+### iptables
+
+还是那个图像处理的例子。后端Service创建后，k8s的control plane分配一个虚拟IP，比如是10.0.0.1。假设Service端口依然是1234，Service被集群中的所有kube-proxy实例发现。当某个Proxy发现了一个新的Service，它会创建一系列的iptables规则，从虚拟IP转发到每个Service的规则上。每个Service的规则又会链接到每个Endpoint规则上，将流量定向到后端（DNAT）。
+
+当一个客户端连接到Service的虚拟IP，iptables开始介入。选出一个后端（基于Session亲和性或随机选择），数据包会被重定向到这个后端。跟用户空间代理不同，数据包不会复制到用户空间，虚拟IP的工作不需要依赖kube-proxy，节点看到的流量依然是来在原始客户端IP。
+
+无论是基于node-port还是负载均衡器，数据的流转方式都是一样的，只不过接收端可能看不到原始的客户端IP。
+
+### IPVS
+
+当集群规模达到10000个Service后iptables的性能会显著下降。IPVS的作用是基于内核哈希表的负载均衡。所以当你使用基于IPVS的kube-proxy时，在大规模Service中依然能得到性能保证。同时IPVS还能提供更复杂的负载均衡算法（最少连接数、本地化、基于权重、持久化连接）。
 
 ## API对象
 
+Service是k8s REST API中的顶级资源。关于API的详细信息可以看：[Service API对象](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#service-v1-core)。
+
 ## 支持的协议
 
+### TCP
+
+任何Service都可以用TCP，这也是Service默认的网络协议。
+
+### UDP
+
+大部分Service都可以支持UDP。对于type=LoadBalancer的Service，要看云服务商是否提供了UDP的支持。
+
+### HTTP
+
+如果云服务商支持，可以为LoadBalancer中的Service设置外部的HTTP/HTTPS反向代理，转发到Service的Endpoint上。
+
+>**注意**：对于HTTP/HTTPS，可以用[Ingress](Ingress.md)来代替Service。
+
+### PROXY
+
+如果云服务商支持（比如[AWS]()），可以用LoadBalancer类型的Service来配置一个k8s外部的负载均衡器，它可以转发[PROXY协议](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt)开头的连接。
+
+负载均衡器会在连接一开始发送描述信息，类似这样
+
+```text
+PROXY TCP4 192.0.2.202 10.0.42.7 12345 7\r\n
+```
+
+然后跟着客户端发过来的数据。
+
+### SCTP
+
+**功能状态**：`Kubernetes v1.12 [alpha]`
+
+k8s可以支持Service、Endpoint、NetworkPolicy和Pod定义中使用SCTP协议，目前是alpha版本。要打开这个功能，集群管理员需要在apiserver中开启`SCTPSupport`特性门，比如`--feature-gates=SCTPSupport=true,...`。
+
+当特性门开启后，就可以把Service、Endpoint、NetworkPolicy、Pod中的`procotol`字段设置为`SCTP`了。k8s的SCTP网络跟TCP的差不多。
+
+### 注意事项
+
+#### multihomed SCTP
+
+>**警告**：
+>多余multihomed SCTP，需要能够支持位Pod分配多个网络接口和IP地址的CNI插件。
+>
+>相关的NAT需要内核模块中的特殊逻辑。
+
+#### LoadBalancer类型的Service
+
+>**警告**：如果云服务商的负载均衡器支持SCTP协议你才能创建`type`为LoadBalancer且`protocol`位SCTP的Service。否则Service的创建请求会被拒绝。当前的云服务商（Azure、AWS、CloudStack、GCE、OpenStack）都不支持SCTP。（说了这么半天都不支持。。。。。）
+
+#### Windows
+
+>**警告**：Windows节点无法支持SCTP。
+
+#### 用户空间的kube-proxy
+
+>**警告**：用户空间模式的kube-proxy无法支持SCTP管理。
+
 ## 下一步……
+
+- 学习[通过Service来连接应用](通过Service来连接应用.md)
+- 学习[Ingress](Ingress.md)
+- 学习[EndpointSlice](EndpointSlice.md)
