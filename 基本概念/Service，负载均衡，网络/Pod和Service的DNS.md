@@ -24,4 +24,75 @@ k8s会在集群中调度一套DNS的Pod和Service，通过kubelet，让每个容
 
 ### SRV记录
 
-SRV记录是根据命名端口来的，属于普通Service或[Headless Service](Service.md#HeadLess-Service)的一部分。对于每一个命名端口，SRV记录的格式为`_my-port-name._my-port-protocol.my-svc.my-namespace.svc.cluster-domain.example`。对于普通的Service，它会解析到对应的端口号以及域名：`my-svc.my-namespace.svc.cluster-domain.example`上。对于headless的Service，它会得到多个DNS应答，Service的每个Pod都会对应一个，包含了端口号以及Pod的域名：`auto-generated-name.my-svc.my-namespace.svc.cluster-domain.example`
+SRV记录是根据命名端口来的，属于普通Service或[Headless Service](Service.md#HeadLess-Service)的一部分。对于每一个命名端口，SRV记录的格式为`_my-port-name._my-port-protocol.my-svc.my-namespace.svc.cluster-domain.example`。对于普通的Service，它会解析到对应的端口号以及域名：`my-svc.my-namespace.svc.cluster-domain.example`上。对于headless的Service，它会得到多个DNS应答，Service的每个Pod都会对应一个，包含了端口号以及Pod的域名：`auto-generated-name.my-svc.my-namespace.svc.cluster-domain.example`。
+
+## Pod
+
+### A/AAAA记录
+
+任何基于Deployment活DaemonSet创建的Pod都可以使用如下格式的DNS解析：
+
+`pod-ip-address.deployment-name.my-namespace.svc.cluster-domain.example`。
+
+### Pod的hostname与子域名字段
+
+当前版本中的Pod在创建之后得到的hostname就是它的`metadata.name`属性的值。
+
+Pod定义时还支持一个可选的`hostname`字段，可以用来指定Pod的主机名。设置了之后，它的优先级就会高于Pod的名字，用作主机名。比如一个Pod的`hostname`设置为“`my-host`”，那它的主机名就是“`my-host`”。
+
+Pod定义时还有另一个可选字段，`subdomain`，可以用来定义子域名。比如一个Pod的`hostname`设置成了“`foo`”，`subdomain`设置成了“`bar`”，命名空间为“`my-namespace`”，那它的完全限定名（FQDN）就是“`foo.bar.my-namespace.svc.cluster-domain.example`”。
+
+栗子：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: default-subdomain
+spec:
+  selector:
+    name: busybox
+  clusterIP: None
+  ports:
+  - name: foo # Actually, no port is needed.
+    port: 1234
+    targetPort: 1234
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox1
+  labels:
+    name: busybox
+spec:
+  hostname: busybox-1
+  subdomain: default-subdomain
+  containers:
+  - image: busybox:1.28
+    command:
+      - sleep
+      - "3600"
+    name: busybox
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox2
+  labels:
+    name: busybox
+spec:
+  hostname: busybox-2
+  subdomain: default-subdomain
+  containers:
+  - image: busybox:1.28
+    command:
+      - sleep
+      - "3600"
+    name: busybox
+```
+
+看上面这个栗子，如果一个headless的Service，跟同一个命名空间下的pod的子域名一致，集群的DNS可以返回Pod的完全主机名对应的A或AAAA记录。比如在这个例子中，其中一个Pod的主机名为“`busybox-1`”，子域名为“`default-subdomain`”，此时，同一个命名空间下的一个headless service同样名为“`default-subdomain`”，那么Pod就会得到它的FQDN“`busybox-1.default-subdomain.my-namespace.svc.cluster-domain.example`”。DNS基于这个名字提供A或AAAA记录，指向Pod的IP地址。“`busybox1`”和“`busybox2`”拥有不同的A或AAAA记录。
+
+Endpoint对象可以为任意端点地址及其IP设置`hostname`。
+
+>**注意**：A或AAAA记录并不是为了作为Pod的名字而创建的，要想创建记录，Pod必须要有`hostname`。一个没有`hostname`但有`subdomain`的Pod只会基于它的headless service创建A或AAAA记录（`default-subdomain.my-namespace.svc.cluster-domain.example`），指向Pod的IP地址。而且，Pod要想真的能够生成记录值，必须要进入就绪（ready）状态，除非在Service上声明了`publishNotReadyAddresses=True`。
