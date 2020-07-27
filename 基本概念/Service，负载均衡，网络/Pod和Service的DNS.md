@@ -96,3 +96,108 @@ spec:
 Endpoint对象可以为任意端点地址及其IP设置`hostname`。
 
 >**注意**：A或AAAA记录并不是为了作为Pod的名字而创建的，要想创建记录，Pod必须要有`hostname`。一个没有`hostname`但有`subdomain`的Pod只会基于它的headless service创建A或AAAA记录（`default-subdomain.my-namespace.svc.cluster-domain.example`），指向Pod的IP地址。而且，Pod要想真的能够生成记录值，必须要进入就绪（ready）状态，除非在Service上声明了`publishNotReadyAddresses=True`。
+>
+### DNS策略
+
+可以在Pod这一层级上设置DNS策略。当前k8s支持一下Pod级别的DNS策略。这些策略定义在Pod的`dnsPolicy`字段中。
+
+- “`Default`”：Pod从所在的节点上继承域名解析配置。参见[有关文章](https://kubernetes.io/docs/tasks/administer-cluster/dns-custom-nameservers/#inheriting-dns-from-the-node)。
+- “`ClusterFirst`”：任何跟集群域名后缀不匹配的DNS查询，比如“`www.kubernetes.io`”，会被转发到所在节点配置的上游DNS服务器。集群管理员可能还配置了额外的stub-domain和上游DNS服务器。相关场景可以参见[有关文章](https://kubernetes.io/docs/tasks/administer-cluster/dns-custom-nameservers/#effects-on-pods)。
+- “`ClusterFirstWithHostNet`”：对于运行在hostNetwork中的Pod，必须明确将它的DNS策略设置为“`ClusterFirstWithHostNet`”。
+- “`None`”：允许Pod忽略k8s的DNS设置。所有DNS设置都来自于Pod定义中的`dnsConfig`字段。参加下面的[DNS配置](#DNS配置)。
+
+>**注意**：“Default”并不是默认的DNS策略（蛤？？？）。如果没有声明`dnsPolicy`，默认是“ClusterFirst”。（蛤？？？）
+
+下面的Pod的DNS策略设置为“ClusterFirstWithHostNet”，因为它把`hostNetwork`设置为`true`了。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox
+  namespace: default
+spec:
+  containers:
+  - image: busybox:1.28
+    command:
+      - sleep
+      - "3600"
+    imagePullPolicy: IfNotPresent
+    name: busybox
+  restartPolicy: Always
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+```
+
+### DNS配置
+
+Pod的DNS配置可以让用户更强势地控制一个Pod的DNS设置。
+
+`dnsConfig`字段是可选的，可以跟任意`dnsPolicy`搭配使用。但是，如果Pod的`dnsPolicy`设置为“`None`”，那么`dnsConfig`字段就必须要要设置。
+
+下面是`dnsConfig`字段支持的各种属性：
+
+- `nameservers`：用作Pod的DNS服务器的IP列表。最多3个IP。当Pod的`dnsPolicy`为“`None`”时，这里至少要包含一个IP，否则就可有可无。这里列出的IP会跟基于DNS策略产生的DNS服务器列表进行合并，去除重复的IP。
+- `searches`：DNS搜索域列表，用于在Pod中进行主机名查询。这个字段是可选的。如果填了，这个列表会并入到基于DNS策略生成的搜索域列表中。重复的域名会被去除。允许最多6个搜索域。
+- `options`：可选字段。这是一个对象列表，每个对象有一个`name`属性（必填）和一个`value`属性（选填）。这里的内容同样会并入基于DNS策略产生的options中，重复的条目会被去除。
+
+下面是一个自定义DNS设置的Pod：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: default
+  name: dns-example
+spec:
+  containers:
+    - name: test
+      image: nginx
+  dnsPolicy: "None"
+  dnsConfig:
+    nameservers:
+      - 1.2.3.4
+    searches:
+      - ns1.svc.cluster-domain.example
+      - my.dns.search.suffix
+    options:
+      - name: ndots
+        value: "2"
+      - name: edns0
+```
+
+如果按照这样创建一个Pod，`test`容器的`/etc/resolv.conf`文件内容如下：
+
+```yaml
+nameserver 1.2.3.4
+search ns1.svc.cluster-domain.example my.dns.search.suffix
+options ndots:2 edns0
+```
+
+对于IPv6，应该像下面这样：
+
+```shell script
+kubectl exec -it dns-example -- cat /etc/resolv.conf
+```
+
+输出：
+
+```text
+nameserver fd00:79:30::a
+search default.svc.cluster-domain.example svc.cluster-domain.example cluster-domain.example
+options ndots:5
+```
+
+#### 支持的版本
+
+Pod的DNS设置及DNS策略“`None`”支持的版本如下。
+
+k8s版本|功能版本
+-|-
+1.14|Stable
+1.10|Beta（默认打开）
+1.9|Alpha
+
+## 下一步……
+
+[如何管理DNS](https://kubernetes.io/docs/tasks/administer-cluster/dns-custom-nameservers/)。
