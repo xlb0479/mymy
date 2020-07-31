@@ -222,5 +222,215 @@ Events:
 IngressController会提供特定实现的负载均衡器来满足这个Ingress，只要Service（`service1`、`service2`）是有效的。完成之后，你就可以在Address字段看到负载均衡器的地址了。
 
 >**注意**：根据你所选择的[Ingress Controller](Ingress%20Controller.md)，可能需要创建一个默认http后端[Service](Service.md)。
+>
+### 虚拟主机
+
+基于名字的虚拟主机，支持在同一个IP低智商路由多个主机的HTTP请求。
+
+```text
+foo.bar.com --|                 |-> foo.bar.com service1:80
+              | 178.91.123.132  |
+bar.foo.com --|                 |-> bar.foo.com service2:80
+```
+
+下面这个Ingress，让内部的负载均衡器根据[Host header](https://tools.ietf.org/html/rfc7230#section-5.4)来路由请求。
+
+```yaml
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: name-virtual-host-ingress
+spec:
+  rules:
+  - host: foo.bar.com
+    http:
+      paths:
+      - backend:
+          serviceName: service1
+          servicePort: 80
+  - host: bar.foo.com
+    http:
+      paths:
+      - backend:
+          serviceName: service2
+          servicePort: 80
+```
+
+如果你创建的Ingress没有定义任何主机信息，那么所有打到Ingress Controller的IP上的流量都可以正常匹配，不需要虚拟主机信息。
+
+比如下面这个Ingress会把`first.bar.com`的请求发给`service1`，把`second.foo.com`的请求发给`service2`，如果不带任何主机信息，直接用IP访问的话（没有请求头），则是打给`service3`。
+
+```yaml
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: name-virtual-host-ingress
+spec:
+  rules:
+  - host: first.bar.com
+    http:
+      paths:
+      - backend:
+          serviceName: service1
+          servicePort: 80
+  - host: second.foo.com
+    http:
+      paths:
+      - backend:
+          serviceName: service2
+          servicePort: 80
+  - http:
+      paths:
+      - backend:
+          serviceName: service3
+          servicePort: 80
+```
+
+### TLS
+
+可以给Ingress定义一个[Secret](../配置/Secret.md)实现安全通信，其中包含TLS私钥和证书。当前的Ingress只能支持一个TLS端口，就是443，并且都会做TLS终结，不会向后传播。如果Ingress中的TLS配置里包含了不同的主机，那就根据SNI TLS扩展（Ingress Controller要支持SNI）中的主机名形成在同一个端口的多路复用。TLS的Secret中必须包含名为`tls.crt`和`tls.key`的key，分别包含了TLS所需的证书和私钥。比如：
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: testsecret-tls
+  namespace: default
+data:
+  tls.crt: base64 encoded cert
+  tls.key: base64 encoded key
+type: kubernetes.io/tls
+```
+
+在Ingress中引用这份儿Secret，就可以让Ingress Controller在客户端和负载均衡器之间的通信链路上使用TLS了。必须确保你创建的证书中包含Common Name（CN），也叫作完全限定域名（Fully Qualified Domain Name（FQDN）），比如`sslexample.foo.com`。
+
+```yaml
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: tls-example-ingress
+spec:
+  tls:
+  - hosts:
+      - sslexample.foo.com
+    secretName: testsecret-tls
+  rules:
+  - host: sslexample.foo.com
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: service1
+          servicePort: 80
+```
+
+>**注意**：不同Ingress Controller支持的TLS略有不同。请参考[Nginx](https://kubernetes.github.io/ingress-nginx/user-guide/tls/)、[GCE](https://github.com/kubernetes/ingress-gce/blob/master/README.md#frontend-https)或其他平台特定的Ingress Controller的相关文档，了解你所使用的TLS到底是怎么工作的。
+
+### 负载均衡
+
+一个Ingress Controller自带一套负载均衡策略，应用到所有的Ingress上，比如负载均衡算法、后端权重计算等等。更高级的负载均衡概念（比如会话保持、动态权重）并没有暴露到Ingress中。你可以在Service使用的负载均衡器上搞这些小伎俩。
+
+值得注意的是，虽然Ingress中没有直接体现健康检查的概念，但是像[就绪探针](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/)这种k8s已有的概念可以让你实现同样的效果。请你去看控制器的相关文档，了解它们是如何处理健康检查的（[Nginx](https://github.com/kubernetes/ingress-nginx/blob/master/README.md)、[GCE](https://github.com/kubernetes/ingress-gce/blob/master/README.md#health-checks)）。
+
+## 更新Ingress
+
+如果要更新已有的Ingress，添加一个新的Host，可以直接编辑资源进行更新：
+
+```shell script
+kubectl describe ingress test
+```
+
+```text
+Name:             test
+Namespace:        default
+Address:          178.91.123.132
+Default backend:  default-http-backend:80 (10.8.2.3:8080)
+Rules:
+  Host         Path  Backends
+  ----         ----  --------
+  foo.bar.com
+               /foo   service1:80 (10.8.0.90:80)
+Annotations:
+  nginx.ingress.kubernetes.io/rewrite-target:  /
+Events:
+  Type     Reason  Age                From                     Message
+  ----     ------  ----               ----                     -------
+  Normal   ADD     35s                loadbalancer-controller  default/test
+```
+
+```shell script
+kubectl edit ingress test
+```
+
+此时会弹出一个编辑器，包含YAML格式的当前配置。直接修改，添加新的Host：
+
+```yaml
+spec:
+  rules:
+  - host: foo.bar.com
+    http:
+      paths:
+      - backend:
+          serviceName: service1
+          servicePort: 80
+        path: /foo
+  - host: bar.baz.com
+    http:
+      paths:
+      - backend:
+          serviceName: service2
+          servicePort: 80
+        path: /foo
+..
+```
+
+当你改完保存之后，kubectl会自动更新API server中的资源信息，而后进一步触发Ingress Controller去重新配置负载均衡器。
+
+看一下：
+
+```shell script
+kubectl describe ingress test
+```
+
+```text
+Name:             test
+Namespace:        default
+Address:          178.91.123.132
+Default backend:  default-http-backend:80 (10.8.2.3:8080)
+Rules:
+  Host         Path  Backends
+  ----         ----  --------
+  foo.bar.com
+               /foo   service1:80 (10.8.0.90:80)
+  bar.baz.com
+               /foo   service2:80 (10.8.0.91:80)
+Annotations:
+  nginx.ingress.kubernetes.io/rewrite-target:  /
+Events:
+  Type     Reason  Age                From                     Message
+  ----     ------  ----               ----                     -------
+  Normal   ADD     45s                loadbalancer-controller  default/test
+```
+
+除了这种方式，还可以修改已有的Ingress YAML文件，执行`kubectl replace -f`，也是一样的效果。
+
+## 跨可用区的异常
+
+如何调整多个异常域之间的流量，每个云服务商的策略也不尽相同。可以查看相关的[Ingress Controller](Ingress%20Controller.md)文档了解详细情况。还有[Federation文档](https://github.com/kubernetes-sigs/kubefed)，其中包含了在Federated集群中部署Ingress的相关细节。
+
+## 展望未来
+
+关注[SIG Network](https://github.com/kubernetes/community/tree/master/sig-network)，了解Ingress及相关资源的最新研究进展。还有[Ingress Repository](https://github.com/kubernetes/ingress-nginx/tree/master)，包含各种Ingress Controller的进展情况。
 
 ## 其他选择
+
+有多重方式暴露Service，不比拘泥于Ingress：
+
+- [Service.Type=LoadBalancer](Service.md#loadbalancer)
+- [Service.Type=NodePort](Service.md#nodeport)
+
+## 下一步……
+
+- 学习[Ingress API](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#ingress-v1beta1-networking-k8s-io)
+- 学习[Ingress Controller](Ingress%20Controller.md)
+- [在Minikube中创建一个Ingress以及NGINX Controller](https://kubernetes.io/docs/tasks/access-application-cluster/ingress-minikube/)
