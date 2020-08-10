@@ -110,6 +110,176 @@ Events:            <none>
 
 >**警告**：`Recycle`这种回收策略已经废弃了。作为替代，建议使用动态分配。
 
+如果底层的数据卷插件能支持，`Recycle`这种回收策略会对数据卷执行一个简单的清理（`rm -rf /thevolume/*`），然后提供给新的Claim。
+
+但是呢，管理员其实可以用k8s的controller manager的命令行参数配置一个自定义的回收器Pod，详见[参考手册](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/)。这种自定义的回收器Pod必须包含一个`volumes`声明，如下：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pv-recycler
+  namespace: default
+spec:
+  restartPolicy: Never
+  volumes:
+  - name: vol
+    hostPath:
+      path: /any/path/it/will/be/replaced
+  containers:
+  - name: pv-recycler
+    image: "k8s.gcr.io/busybox"
+    command: ["/bin/sh", "-c", "test -e /scrub && rm -rf /scrub/..?* /scrub/.[!.]* /scrub/*  && test -z \"$(ls -A /scrub)\" || exit 1"]
+    volumeMounts:
+    - name: vol
+      mountPath: /scrub
+```
+
+但是，这个自定义的回收器Pod中的`volumes`的路径部分部分会被替换成要回收的数据卷的路径。（这个不知道是k8s会自动替换还是需要咱们手动替换，应该是要手动替换的吧，command里面不也得改么）
+
+### PVC扩容
+
+**功能状态**：`Kubernetes v1.11 [beta]`
+
+现在默认就开启了对PVC扩容的支持。你可以扩容以下类型的数据卷：
+
+- gcePersistentDisk
+- awsElasticBlockStore
+- Cinder
+- glusterfs
+- rbd
+- Azure File
+- Azure Disk
+- Portworx
+- FlexVolumes
+- CSI
+
+只有当PVC的StorageClass的`allowVolumeExpansion`设置为true的情况下才可以对其进行扩容。
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gluster-vol-default
+provisioner: kubernetes.io/glusterfs
+parameters:
+  resturl: "http://192.168.10.100:8080"
+  restuser: ""
+  secretNamespace: ""
+  secretName: ""
+allowVolumeExpansion: true
+```
+
+要想申请一个更大的PVC，修改PVC对象然后指定一个更大的容量。这就会触发数据卷的扩容，进而传递到底层PV上。不会重建一个新的PV来满足Claim，而是对当前数据卷进行扩容。
+
+#### CSI数据卷扩容
+
+**功能状态**：`Kubernetes v1.16 [beta]`
+
+CSI数据卷默认就可以支持扩容，但是需要对应的CSI驱动也必须能够支持数据卷扩容。参考特定的CSI驱动文档了解更多信息。
+
+#### 对包含文件系统的数据卷进行大小调整
+
+如果数据卷包含了一个文件系统，只有是XFS、Ext3或Ext4的时候才能对数据卷进行大小调整。
+
+如果数据卷包含了文件系统，只有在新的Pod用`ReadWrite`模式使用这个PVC时才会被调整大小。文件系统扩容只有在Pod启动，或者说在Pod运行的时候但是底层文件系统支持在线扩容的情况下执行。
+
+FlexVolume可以在驱动的`RequiresFSResize`设置为`true`的情况下允许调整大小。FlexVolume可以在Pod重启的时候进行大小调整。
+
+#### 对正在使用的PVC调整大小
+
+**功能状态**：`Kubernetes v1.15 [beta]`
+
+>**注意**：从1.15版本开始，对使用中的PVC进行扩容进入到了beta版本，从1.11开始一直是alpha版本。必须要开启`ExpandInUsePersistentVolumes`特性，很多集群对beta特性默认都是自动开启的。参见[特性门](https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/)了解更多内容。
+
+在这种情况下，不需要删除或重建那些正在使用PVC的Pod或Deployment。当正在使用的PVC的文件系统被扩容时，PVC对Pod一直保持可用状态。对于没有被Pod或Deployment使用的PVC，这种特性没有屁用。在扩容完成前，你必须创建一个使用该PVC的Pod。（最后这个倒是没想到）
+
+和其他数据卷类型差不多——FlexVolume数据卷也可以在被Pod使用的时候进行扩容。
+
+>**注意**：FlexVolume要想支持调整大小，底层的驱动必须也同时支持。
+
+>**注意**：对EBS数据卷进行扩容可是个耗时的活儿。而且，每个数据卷有一个配额，每6个小时允许修改一次。
+
+#### 数据卷扩容时进行错误恢复
+
+如果扩容底层存储出错，集群管理员可以手动恢复PVC的状态，并取消调整大小的请求。否则，如果没有管理员介入，控制器会不断地重试该请求。
+
+- 1.将绑定到PVC的PV的回收策略标记为`Retain`。
+- 2.删除PVC。因为PV的回收策略是`Retain`——重建PVC不会丢失任何数据。
+- 3.删除PV的`claimRef`属性，这样新的PVC就可以绑定它了。这一步应该会让PV变为`Available`。
+- 4.用一个比PV稍小的容量来重建PVC，并将PVC的`volumeName`字段设置为PV的的名字。这一步可以让新的PVC绑定到已有的PV上。
+- 5.不要忘记恢复PV的回收策略。
+
+## PV的类型
+
+PV的各种类型被实现成了插件。k8s目前支持以下插件：
+
+- GCEPersistentDisk
+- AWSElasticBlockStore
+- AzureFile
+- AzureDisk
+- CSI
+- FC (Fibre Channel)
+- FlexVolume
+- Flocker
+- NFS
+- iSCSI
+- RBD (Ceph Block Device)
+- CephFS
+- Cinder (OpenStack block storage)
+- Glusterfs
+- VsphereVolume
+- Quobyte Volumes
+- HostPath (Single node testing only -- local storage is not supported in any way and WILL NOT WORK in a multi-node cluster)
+- Portworx Volumes
+- ScaleIO Volumes
+- StorageOS
+
+## PV
+
+每个PV包含一个spec和一个status，也就是数据卷的定义和状态。PV对象的名字必须是有效的[DSN子域名](../概要/Kubernetes对象/对象的名字和ID.md#DNS子域名)。
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv0003
+spec:
+  capacity:
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Recycle
+  storageClassName: slow
+  mountOptions:
+    - hard
+    - nfsvers=4.1
+  nfs:
+    path: /tmp
+    server: 172.17.0.2
+```
+
+>**注意**：在集群中使用一个PV的时候可能需要对应数据卷类型的辅助程序。在本例中，这个PV是NFS类型的，需要有/sbin/mount.nfs这个辅助程序来支持NFS文件系统的挂载。
+
+### 容量
+
+一般来说一个PV都有一个特定的存储容量。是通过PV的`capacity`属性来设置的。可以去看k8s的[资源模型](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/scheduling/resources.md)了解`capacity`的单位。
+
+目前来看，存储大小是唯一可以被设置或被请求的资源。未来可能还会提供IOPS、吞吐量等属性。
+
+### 数据卷模式
+
+**功能状态**：`Kubernetes v1.18 [stable]`
+
+k8s的PV支持两种`volumeMode`：`Filesystem`和`Block`。
+
+`volumeMode`是个可选参数。如果不填，默认是`Filesystem`。
+
+带有`volumeMode`的数据卷：`Filesystem`是*被挂载*到了Pod的一个目录中。如果数据卷底层是一个块设备，并且设备是空的，k8s会在首次进行挂载前，先在这个设备上创建一个文件系统。
+
+可以将`volumeMode`设置为`Block`，作为一个裸设备来使用数据卷。这种数据卷在Pod中表现为一个块设备，没有任何文件系统。这种模式可以为Pod提供最快速的访问数据卷的方式，在Pod和数据卷中间没有任何文件系统层。另一方面，运行在Pod中的应用必须要知道如何处理裸设备。见[裸设备数据卷支持](#裸设备数据卷)，其中包含了一个在Pod中使用`volumeMode: Block`的栗子。
+
 ### 访问模式
 
 ### 回收策略
