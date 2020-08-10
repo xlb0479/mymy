@@ -94,19 +94,25 @@ Events:            <none>
 
 当用户用完了他们的数据卷，可以用API删除这些PVC对象，触发资源回收。PV的回收策略告诉集群当PV从它的Claim中释放出来之后要做什么。目前来说是，数据卷可以保留（Retain）、回收（Recycle）或删除（Delete）。
 
-#### 保留
+#### 保留（Retain）
 
 `Retain`这种回收策略可以允许手动对资源进行回收。当PVC删除后，PV一直存在，数据卷被认为是得到了“释放”。但此时还不能提供给另一个Claim使用，因为前一个Claim的数据还留在数据卷中。管理员可以按照以下步骤手动回收数据卷。
 
-1.删除PV。关联在外部设备（比如AWS EBS、GCE PD、Azure Disk或者Cinder数据卷）中的存储资产在PV删除后依然能够一直保留。
-2.手动删除存储资产上的数据。
-3.手动删除存储资产，或者如果你想重用同样的存储资产，就用它们创建一个新的PV。
+- 1.删除PV。关联在外部设备（比如AWS EBS、GCE PD、Azure Disk或者Cinder数据卷）中的存储资产在PV删除后依然能够一直保留。
+- 2.手动删除存储资产上的数据。
+- 3.手动删除存储资产，或者如果你想重用同样的存储资产，就用它们创建一个新的PV。
 
-#### 删除
+#### 删除（Delete）
 
+如果数据卷插件支持`Delete`这种回收策略，删除操作会从k8s中删除PV对象，以及管理在外部设备，比如AWS EBS、GCE PD、Azure Disk或者Cinder数据卷，中的存储资产。动态分配的数据卷会继承[StorageClass的回收策略]()，默认就是`Delete`。管理员应当根据用户的期望来配置StorageClass；否则PV必须要在创建候进行编辑（edit）或者打补丁（patch）了。见[修改一个PV的回收策略](https://kubernetes.io/docs/tasks/administer-cluster/change-pv-reclaim-policy/)。
 
+#### 回收（Recycle）
+
+>**警告**：`Recycle`这种回收策略已经废弃了。作为替代，建议使用动态分配。
 
 ### 访问模式
+
+### 回收策略
 
 ## 用Claim做数据卷
 
