@@ -442,6 +442,175 @@ PVC不是必须要请求一个Class。如果PVC将`storageClassName`设置为`""
 
 ## Claim做数据卷
 
+Pod是将Claim作为一个数据卷来访问存储的。Claim必须跟Pod处于同一个命名空间。集群会根据Pod的命名空间来查找其中的Claim，进而找到后面的PV。然后，数据卷就挂载到主机和Pod上了。
 
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mypod
+spec:
+  containers:
+    - name: myfrontend
+      image: nginx
+      volumeMounts:
+      - mountPath: "/var/www/html"
+        name: mypd
+  volumes:
+    - name: mypd
+      persistentVolumeClaim:
+        claimName: myclaim
+```
+
+### 关于命名空间
+
+PV的绑定是独占的，由于PVC是有命名空间的，所以，以“多种”模式（`ROX`、`RWX`）挂载只可能存在于同一个命名空间中。
 
 ## 裸设备数据卷
+
+**功能状态**：`Kubernetes v1.18 [stable]`
+
+以下数据卷插件支持裸设备数据卷，包括可能的动态分配能力：
+
+- AWSElasticBlockStore
+- AzureDisk
+- CSI
+- FC (Fibre Channel)
+- GCEPersistentDisk
+- iSCSI
+- Local volume
+- OpenStack Cinder
+- RBD (Ceph Block Device)
+- VsphereVolume
+
+### 使用裸设备数据卷的PV
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: block-pv
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block
+  persistentVolumeReclaimPolicy: Retain
+  fc:
+    targetWWNs: ["50060e801049cfd1"]
+    lun: 0
+    readOnly: false
+```
+
+### 请求裸设备数据卷的PVC
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: block-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block
+  resources:
+    requests:
+      storage: 10Gi
+```
+
+### 为容器指定裸设备路径
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-with-block-volume
+spec:
+  containers:
+    - name: fc-container
+      image: fedora:26
+      command: ["/bin/sh", "-c"]
+      args: [ "tail -f /dev/null" ]
+      volumeDevices:
+        - name: data
+          devicePath: /dev/xvda
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: block-pvc
+```
+
+>**注意**：当你为Pod添加一个裸设备的时候，需要在容器中指定的是设备路径，而非挂载路径。
+
+### 绑定块数据卷
+
+如果用户在请求裸设备数据卷的时候，在PVC的定义中使用了`volumeMode`属性，则绑定规则跟以前的版本稍有不同，以前不会考虑定义中的模式字段。下表列出了用户和管理员可能做出的裸设备请求组合。表中展示了每种组合下数据卷是否会被绑定，不包含静态分配类型的数据卷的规则矩阵：
+
+**PV的volumeMode**|**PVC的volumeMode**|**绑定结果**
+-|-|-
+未指定|未指定|BIND
+未指定|Block|NO BIND
+未指定|Filesystem|BIND
+Block|未指定|NO BIND
+Block|Block|BIND
+Block|Filesystem|NO BIND
+Filesystem|Filesystem|BIND
+Filesystem|Block|NO BIND
+Filesystem|未指定|BIND
+
+>**注意**：只有静态分配数据卷还停留在alpha版本。管理员在使用裸设备的时候应当对这些值多加小心。
+
+## 数据卷快照以及从快照中恢复
+
+**功能状态**：`Kubernetes v1.17 [beta]`
+
+数据卷快照特性只提供给CSI数据卷插件。详见[数据卷快照](数据卷快照.md)。
+
+如果要从数据卷快照中恢复一个数据卷，需要在apiserver和controller-manager上面开启`VolumeSnapshotDataSource`特性门。
+
+### 从数据卷快照上创建PVC
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: restore-pvc
+spec:
+  storageClassName: csi-hostpath-sc
+  dataSource:
+    name: new-snapshot-test
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+```
+
+## 数据卷克隆
+
+[数据卷克隆](数据卷克隆.md)只支持CSI数据卷插件。
+
+### 基于已有的PVC创建一个PVC
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cloned-pvc
+spec:
+  storageClassName: my-csi-plugin
+  dataSource:
+    name: existing-src-pvc-name
+    kind: PersistentVolumeClaim
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+```
+
+## 编写可移植的配置
+
