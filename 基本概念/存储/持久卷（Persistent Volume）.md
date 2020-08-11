@@ -282,8 +282,166 @@ k8s的PV支持两种`volumeMode`：`Filesystem`和`Block`。
 
 ### 访问模式
 
+只要是资源提供者支持的方式，PV可以用各种方式挂载到主机上。如下表所见，提供者具有不同的能力，每个PV也设置成了特定数据卷所支持的访问模式。比如吧，NFS可以支持多个客户端的读写，但某一个NFS的PV可能只设置成只读模式。每个PV有自己的访问模式集合，描述一个特定PV的能力。（我觉得我快成机器翻译了）
+
+访问模式有：
+
+- ReadWriteOnce——数据卷可以被一个单独的节点以读写方式挂载。
+- ReadOnlyMany——数据卷可以被多个节点以只读的方式挂载。
+- ReadWriteMany——数据卷可以被多个节点以读写的方式挂载。
+
+在命令行中，访问模式简写成：
+
+- RWO——ReadWriteOnce
+- ROX——ReadOnlyMany
+- RWX——ReadWriteMany
+
+>**重要！**一个数据卷一次只能使用一种访问模式，即便它支持多种也不行。比如吧，一个GCEPersistentDisk可以被一个单独的节点挂载成ReadWriteOnce，或者被多个节点挂载成ReadOnlyMany，但是！但是不能同时存在。
+
+数据卷插件|ReadWriteOnce|ReadOnlyMany|ReadWriteMany
+-|-|-|-
+AWSElasticBlockStore|✓|-|-
+AzureFile|✓|✓|✓
+AzureDisk|✓|-|-
+CephFS|✓|✓|✓
+Cinder|✓|-|-
+CSI|依赖于驱动|依赖于驱动|依赖于驱动
+FC|✓|✓|-
+FlexVolume|✓|✓|依赖于驱动
+Flocker|✓|-|-
+GCEPersistentDisk|✓|✓|-
+Glusterfs|✓|✓|✓
+HostPath|✓|-|-
+iSCSI|✓|✓|-
+Quobyte|✓|✓|✓
+NFS|✓|✓|✓
+RBD|✓|✓|-
+VsphereVolume|✓|-|- (Pod在一起的时候可以)
+PortworxVolume|✓|-|✓
+ScaleIO|✓|✓|-
+StorageOS|✓|-|-
+
+### 每个PV有一个Class，也就是`storageClassName`，对应一个[StorageClass](Storage%20Class.md)的名字。一个指定Class的PV只能绑定到请求该Class的PVC上。一个没有`storageClassName`的PV就没有Class，只能绑定到没有指定Class的PVC上。
+
+在老老年间，我们用的是`volume.beta.kubernetes.io/storage-class`注解而不是`storageClassName`属性。现在这个注解依然管用；但是在未来的版本中会被完全废弃。
+
 ### 回收策略
 
-## 用Claim做数据卷
+当前的回收策略有：
+
+- Retain——手动回收
+- Recycle——基本清理（`rm -rf /thevolume/*`）
+- Delete——相关的存储资产，比如AWS EBS、GCE PD、Azure Disk或者OpenStack Cinder，数据卷会被删除。
+
+目前只有NFS和HostPath支持Recycle。AWS EBS、GCE PD、Azure Disk以及Cinder数据卷支持Delete。
+
+### 挂载选项
+
+当一个PV挂载到一个节点上时，k8s管理员可以指定额外的挂载选项。
+
+>**注意**：不是所有的PV都支持挂载选项。
+
+一下数据卷类型支持挂载选项：
+
+-AWSElasticBlockStore
+-AzureDisk
+-AzureFile
+-CephFS
+-Cinder (OpenStack block storage)
+-GCEPersistentDisk
+-Glusterfs
+-NFS
+-Quobyte Volumes
+-RBD (Ceph Block Device)
+-StorageOS
+-VsphereVolume
+-iSCSI
+
+不会对挂载选项进行校验，如果某个选项不对，挂载直接失败。
+
+在老老年间，我们使用`volume.beta.kubernetes.io/mount-options`而不是`mountOptions`属性。现在这个属性依然管用；但是，在未来的版本中会被完全废弃。
+
+### 节点亲和性（Affinity）
+
+>**注意**：对于大部分数据卷类型，你不需要设置这个字段。它会自动注入到[AWS EBS]()、[GCE PD]()以及[Azure Disk]()数据卷类型中。对于[local](数据卷.md#local)数据卷你才需要进行明确设置。
+
+一个PV可以通过设置[节点亲和性](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#volumenodeaffinity-v1-core)来定义约束，限制该数据卷可以被哪些节点访问。使用该PV的Pod，只会被调度到那些被节点亲和性选中的节点上。
+
+### 阶段（Phase）
+
+一个数据卷会处于以下阶段之一：
+
+- Available——空闲资源，尚未绑定到任何Claim
+- Bound——已经绑定到某个Claim上了
+- Released——它的Claim已经被删除了，但是资源尚未被集群回收
+- Failed——数据卷自动回收失败
+
+命令行中可以显示出PV绑定的PVC的名字。
+
+### PVC
+
+每个PVC包含一个spec和一个status，也就是它的定义和状态。PVC对象的名字必须是有效的[DNS子域名](../概要/Kubernetes对象/对象的名字和ID.md#DNS子域名)。
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: myclaim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 8Gi
+  storageClassName: slow
+  selector:
+    matchLabels:
+      release: "stable"
+    matchExpressions:
+      - {key: environment, operator: In, values: [dev]}
+```
+
+### 访问模式
+
+对存储请求特定访问模式的时候，Claim和数据卷保持同样的约定。
+
+### 数据卷模式
+
+也是一样，跟数据卷保持同样的约定，指定数据卷是一个文件系统还是块设备。
+
+### 资源
+
+Claim跟Pod差不多，可以请求指定数量的资源。本例中请求的是存储资源。同样的[资源模型](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/scheduling/resources.md)适用于数据卷和Claim。
+
+### 选择器
+
+Claim可以定义一个[标签选择器](../概要/Kubernetes对象/标签（Label）和选择器（Selector）.md#标签选择器)，对数据卷集合进行进一步的过滤。只有标签跟选择器匹配的数据卷才能绑定到Claim上面。选择器由两个字段组成：
+
+- `matchLabels`——数据卷必须要有一个同样的标签以及同样的值
+- `matchExpressions`——一个列表，包含指定的key、value列表，以及将key和value关联起来的operator。有效的operator包括In、NotIn、Exists和DoesNotExist。
+
+所有这些要求，`matchLabels`和`matchExpressions`，是要取交集的——要想匹配必须全部满足。
+
+### Class
+
+通过将`storageClassName`设置成[StorageClass](Storage%20Class.md)的名字，一个Claim可以请求一个特定的Class。只有Class和被请求的Class相同的PV，名字和PVC的`storageClassName`相同，才能绑定到PVC上。
+
+PVC不是必须要请求一个Class。如果PVC将`storageClassName`设置为`""`，会被推断为请求一个没有Class的PV，因此只能绑定到没有Class的PV上（老老年间就是没有注解，或者没有设置为`""`）。没有`storageClassName`的PVC不太一样（注意是没有，而不是设置成`""`），集群会做特殊处理，这依赖于是否开启了[`DefaultStorageClass`admission plugin](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#defaultstorageclass)。
+
+- 如果开启了admission plugin，管理员要指定一个默认的StorageClass。所有不带`storageClassName`的PVC只会绑定到该默认值的PV上。可以将StorageClass对象的`storageclass.kubernetes.io/is-default-class`注解设置为`true`来将它这是为默认的StorageClass。如果管理员没有设置默认对象，那集群就会假装没有开启admission plugin。如果指定了多个默认对象，admission plugin会禁止所有PVC的创建。
+- 如果关闭了admission plugin，没有默认的StorageClass标记。所有不带`storageClassName`的PVC只能绑定到不带Class的PV上，此时，不带`storageClassName`的PVC跟那些将`storageClassName`设置为`""`的PVC就一样了。
+
+跟你的安装方式有关，可能在集群安装的时候addon manager就已经将默认的StorageClass部署到集群中了。
+
+如果PVC请求了一个StorageClass，同时还设置了一个`selector`，这两个请求要取交集：只有跟请求的Class匹配的PV，并且标签也匹配的PV，才能绑定到PVC上。
+
+>**注意**：目前来说，如果PVC的`selector`非空，则不会为其动态分配PV。
+
+在老老年间，我们使用`volume.beta.kubernetes.io/storage-class`注解而不是`storageClassName`属性。这个注解现在依然管用；但是，在未来的版本中会被完全废弃。
+
+## Claim做数据卷
+
+
 
 ## 裸设备数据卷
