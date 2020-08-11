@@ -614,3 +614,17 @@ spec:
 
 ## 编写可移植的配置
 
+如果你正在搞一套模板或者栗子，想要运行在大量集群上，并且还用到了持久化存储，建议你参照下面的模式来做：
+
+- 把PVC对象打包到你的配置中（和Deployment、ConfigMap等一起）。
+- 配置中不要包含PV对象，因为初始化这份配置的用户可能没有创建PV的权限。
+- 对模板进行初始化时，可以给用户提供一个StorageClass名字的选项。
+  - 如果用户设置了一个StorageClass名字，把它放到`persistentVolumeClaim.storageClassName`字段上。如果管理员开启了StorageClass，这就会让PVC在集群中匹配到正确的StorageClass。
+  - 如果用户没有设置StorageClass的名字，那么`persistentVolumeClaim.storageClassName`就留空。这就会让集群中默认的StorageClass为用户自动分配PV。许多集群环境中都安装了默认的StorageClass，或者是管理员自己创建了默认的StorageClass。
+- 在你的小工具中，监视那些一段时间内仍然没有绑定的PVC，将这些信息呈现给用户，因为这可能意味着集群没有提供动态存储支持（需要用户手动创建可以匹配的PV）或者集群就没有存储系统（用户无法部署需要PVC的配置）。
+
+## 下一步……
+
+- [创建一个PV](https://kubernetes.io/docs/tasks/configure-pod-container/configure-persistent-volume-storage/#create-a-persistentvolume)。
+- [创建一个PVC](https://kubernetes.io/docs/tasks/configure-pod-container/configure-persistent-volume-storage/#create-a-persistentvolumeclaim)。
+- 学习[持久化存储设计文档](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/storage/persistent-storage.md)。
