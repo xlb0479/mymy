@@ -175,6 +175,33 @@ parameters:
 - `adminSecretName`：`adminId`的Secret名。必填项。对应的Secret类型必须为“kubernetes.io/rbd”。
 - `adminSecretNamespace`：`adminSecretName`的命名空间。默认是“default”。
 - `pool`：Ceph RBD pool。默认是“rbd”。
-- `userId`：
+- `userId`：Ceph上面用来映射RBD镜像的client ID。默认和`adminId`一样。
+- `userSecretName`：用于让`userId`映射到RBD镜像的Secret的名字。必须和PVC在同一个命名空间。必填项。Secret类型必须是“kubernetes.io/rbd”，比如这样：
+
+```shell script
+kubectl create secret generic ceph-secret --type="kubernetes.io/rbd" \
+  --from-literal=key='QVFEQ1pMdFhPUnQrSmhBQUFYaERWNHJsZ3BsMmNjcDR6RFZST0E9PQ==' \
+  --namespace=kube-system
+```
+
+- `userSecretNamespace`：`userSecretName`的命名空间。
+- `fsType`：k8s支持的fsType。默认是`“ext4”`。
+- `imageFormat`：Ceph RBD镜像格式，“1”或“2”。默认是“2”。
+- `imageFeatures`：可选项。只有当`imageFormat`为“2”的时候可用。当前只支持`layering`特性。默认是“”，不会开启任何特性。
 
 ### Local
+
+**功能特性**：`Kubernetes v1.14 [stable]`
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+```
+
+本地数据卷目前不支持动态分配，但依然可以创建一个StorageClass来推迟数据卷绑定，直到Pod调度之后再进行。这是通过设置`WaitForFirstConsumer`数据卷绑定模式来实现的。
+
+延迟数据卷的绑定可以让调度器为PVC选择合适的PV的时候，考虑到所有Pod调度上的相关约束。
