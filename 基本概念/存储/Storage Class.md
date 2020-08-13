@@ -96,4 +96,85 @@ CSI|1.14 (alpha), 1.16 (beta)
 
 ### 数据卷绑定模式
 
+`volumeBindingMode`字段控制着[数据卷绑定和动态分配](持久卷（Persistent%20Volume）.md#分配)的时机。
+
+默认情况下，`Immediate`模式就是说一旦PVC创建出来，就立即进行数据卷绑定和动态分配。对于有拓扑限制的存储，不是集群所有节点都能访问的那种存储，PV在绑定活分配的时候是不知道Pod的调度情况的。这就会导致Pod调度异常。
+
+集群管理员可以通过设置`WaitForFirstConsumer`模式来指出这种情况，这样，就会延后PV的绑定和分配，直到使用PVC的Pod被创建出来。PV会根据Pod调度的拓扑约束来进行选择或分配。依据的约束条件包括但不限于[资源需求](../配置/管理容器资源.md)、[节点选择器](../调度和驱逐/将Pod指派到节点.md#nodeselector)、[Pod亲和性以及反亲和性](../调度和驱逐/将Pod指派到节点.md#亲和性与反亲和性)，还有[热脸和冷屁股](../调度和驱逐/热脸和冷屁股.md)。
+
+以下插件支持在`WaitForFirstConsumer`模式下的动态分配（我都没翻译）：
+
+- [AWSElasticBlockStore]()
+- [GCEPersistentDisk]()
+- [AzureDisk]()
+
+以下插件支持`WaitForFirstConsumer`模式下的预创建PV的绑定：
+
+- 以上所有
+- [Local](#Local)
+
+**功能状态**：`Kubernetes v1.17 [stable]`
+
+[CSI数据卷](数据卷.md#CSI)可以支持动态分配和预创建的PV，但是你需要阅读特定CSI驱动的文档，看看它们支持的拓扑key和栗子。
+
+### 允许的拓扑
+
+当用户设置了`WaitForFirstConsumer`这种数据卷绑定模式，大部分情况下都不需要将分配设置到特定拓扑中了。当然，如果依然有需求，可以设置`allowedTopologies`。
+
+本例演示了如何将分配数据卷的拓扑限制到特定的可用区中，可以替换插件中的`zone`和`zones`字段。
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard
+provisioner: kubernetes.io/gce-pd
+parameters:
+  type: pd-standard
+volumeBindingMode: WaitForFirstConsumer
+allowedTopologies:
+- matchLabelExpressions:
+  - key: failure-domain.beta.kubernetes.io/zone
+    values:
+    - us-central1-a
+    - us-central1-b
+```
+
+## 参数
+
+StorageClass有一些参数用来描述属于该Class的数据卷。实际可用的参数要依赖于`provisioner`。比如，`type`参数值为`io1`，以及`iopsPerGB`参数，都是EBS特有的。如果某个参数没有写，会有对应的默认值。
+
+一个StorageClass中最多可以定义512个参数。参数对象的最大长度不能超过256KB，包括了key和value的长度。
+
+下面只列出我感兴趣的provisioner。
+
+### Ceph RBD
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast
+provisioner: kubernetes.io/rbd
+parameters:
+  monitors: 10.16.153.105:6789
+  adminId: kube
+  adminSecretName: ceph-secret
+  adminSecretNamespace: kube-system
+  pool: kube
+  userId: kube
+  userSecretName: ceph-secret-user
+  userSecretNamespace: default
+  fsType: ext4
+  imageFormat: "2"
+  imageFeatures: "layering"
+```
+
+- `monitors`：Ceph的monitor列表，用逗号间隔。必填项。
+- `adminId`：Ceph的ClientID，需要能在pool中创建镜像。默认是“admin”。
+- `adminSecretName`：`adminId`的Secret名。必填项。对应的Secret类型必须为“kubernetes.io/rbd”。
+- `adminSecretNamespace`：`adminSecretName`的命名空间。默认是“default”。
+- `pool`：Ceph RBD pool。默认是“rbd”。
+- `userId`：
+
 ### Local
