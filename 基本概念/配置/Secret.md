@@ -61,6 +61,47 @@ kubectl create secret generic db-user-pass --from-file=username=./username.txt -
 >
 >如果是保存在文件中的密码就不用转义了（`--from-file`）。
 
+检查一下创建好的Secret：
+
+```shell script
+kubectl get secrets
+```
+
+输出如下：
+
+```text
+NAME                  TYPE                                  DATA      AGE
+db-user-pass          Opaque                                2         51s
+```
+
+查看Secret的描述：
+
+```shell script
+kubectl describe secrets/db-user-pass
+```
+
+输出如下：
+
+```text
+Name:            db-user-pass
+Namespace:       default
+Labels:          <none>
+Annotations:     <none>
+
+Type:            Opaque
+
+Data
+====
+password.txt:    12 bytes
+username.txt:    5 bytes
+```
+
+>**注意**：`kubectl get`和`kubectl describe`命令默认不会显示Secret中的内容。这是为了避免Secret暴露给不经意的观察者，或者被保存到终端的日志中。
+
+阅读[Secret解码](#Secret解码)，了解如何查看Secret中的内容。
+
+#### Secret解码
+
 ### Secret作为Pod中的文件
 
 ### Secret作为环境变量
