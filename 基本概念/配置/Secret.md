@@ -53,6 +53,7 @@ kubectl create secret generic db-user-pass --from-file=username=./username.txt -
 ```
 
 >**注意**：
+>
 >类似`$`、`\`、`*`、`=`以及`!`这种特殊字符会在你的[shell](https://en.wikipedia.org/wiki/Shell_(computing))中被解释，所以需要转义。在大部分的shell中，密码转移的最简单的方法就是加上单引号（`'`）。比如你的密码是`S!B\*d$zDsb=`，就要像这样执行命令：
 >
 >```shell script
