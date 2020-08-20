@@ -471,6 +471,257 @@ spec:
 
 一旦你用了`.spec.volumes[].secret.items`，只有`items`中指定的key会被映射。要想使用Secret中的所有key，那么所有key都要放到`items`字段里。反过来也一样，`items`字段中的所有key也必须要存在于对应的Secret中。否则数据卷就不会被创建。
 
+#### Secret文件权限
+
+可以为每个Secret的key设置文件访问权限位。如果不设置，默认就是`0644`。如果需要的话，可以为整个Secret数据卷设置一个默认的模式。
+
+比如这样：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mypod
+spec:
+  containers:
+  - name: mypod
+    image: redis
+    volumeMounts:
+    - name: foo
+      mountPath: "/etc/foo"
+  volumes:
+  - name: foo
+    secret:
+      secretName: mysecret
+      defaultMode: 0400
+```
+
+Secret会被挂载到`/etc/foo`中，创建的文件权限都是`0400`。
+
+注意JSON格式下是不支持八进制标记的，所以要用256而不是0400。如果你用的是YAML而不是JSON，那你就可以用八进制，这样的你看着更像个人。
+
+如果你通过`kubectl exec`钻到了Pod里，你得追一下链接标记才能找到最终的文件模式。比如这样：
+
+```shell script
+kubectl exec mypod -it sh
+
+cd /etc/foo
+ls -l
+```
+
+输出如下：
+
+```text
+total 0
+lrwxrwxrwx 1 root root 15 May 18 00:18 password -> ..data/password
+lrwxrwxrwx 1 root root 15 May 18 00:18 username -> ..data/username
+```
+
+追着链接找到正确的文件模式。
+
+```shell script
+cd /etc/foo/..data
+ls -l
+```
+
+输出如下：
+
+```text
+total 8
+-r-------- 1 root root 12 May 18 00:18 password
+-r-------- 1 root root  5 May 18 00:18 username
+```
+
+可以参照前面的栗子用映射的方式给每个文件设置不同的权限：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mypod
+spec:
+  containers:
+  - name: mypod
+    image: redis
+    volumeMounts:
+    - name: foo
+      mountPath: "/etc/foo"
+  volumes:
+  - name: foo
+    secret:
+      secretName: mysecret
+      items:
+      - key: username
+        path: my-group/my-username
+        mode: 0777
+```
+
+最终，`/etc/foo/my-group/my-username`的文件权限就是`0777`。如果用JSON，考虑到JSON的限制，你就要写成`511`。
+
+注意这个权限值，过后再看的话可能会显示成小数格式。
+
+#### 从数据卷中获取Secret的数据
+
+在挂载了Secret数据卷的容器中，Secret的key作为文件名出现，Secret的值则是用base64编码保存到了文件中。执行对应的命令就是这样的结果：
+
+```shell script
+ls /etc/foo/
+```
+
+输出如下：
+
+```text
+username
+password
+```
+
+```shell script
+cat /etc/foo/username
+```
+
+输出如下：
+
+```text
+admin
+```
+
+```shell script
+cat /etc/foo/password
+```
+
+输出如下：
+
+```text
+1f2d1e2e67df
+```
+
+容器中的程序要读取文件中的Secret数据。（这是什么意思呢？这不是明摆着呢么。奥。。。可能是。。。。。）
+
+#### 自动更新
+
+当一个作为数据卷的Secret被更新了，映射的key最终也会被更新。kubelet会在每个同步周期去检查挂载的Secret是不是最新的。但是kubelet会使用它的本地缓存来获取Secret的当前值。这种缓存的类型是通过[KubeletConfiguration结构体](https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/kubelet/config/v1beta1/types.go)中的`ConfigMapAndSecretChangeDetectionStrategy`字段来控制的。Secret可以通过监视（默认）、ttl、或者直接将请求重定向到apiserver的方式进行传播。结果就是，从Secret被更新开始，到新的key被映射到Pod中，最大的延时时间是kubelet的同步周期+缓存传播延时，而缓存的传播延时取决于使用的缓存类型（它等于监视传播延时、缓存的ttl，或者两者皆为0）。
+
+>**注意**：将Secret用作[subPath](../存储/数据卷.md#使用subPath)数据卷的话就无法感知到Secret的更新了。
+
+**功能状态**：`Kubernetes v1.18 [alpha]`
+
+k8s提供的alpha版本的特性*不可变Secret和ConfigMap*，可以将个别的Secret和ConfigMap设置为不可变的。对于大规模使用Secret的集群（成千上万个独立挂载的Secret），不让它们更新可以带来以下好处：
+
+- 避免偶然的（不希望的）更新，导致应用异常
+- 提升集群性能，极大降低了apiserver的负载，因为不可变的Secret就不需要对它们进行监视。
+
+要使用这个功能，需要开启`ImmutableEphemeralVolumes`[特性门](https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/)，然后将Secret或ConfigMap的`immutable`字段设置为`true`。比如：
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  ...
+data:
+  ...
+immutable: true
+```
+
+>**注意**：一旦Secret或ConfigMap被设置为不可变的，这种操作是*不能*撤销的，而且也不能修改`data`字段的值。只能删除并重建Secret。Pod中会保留被删除的Secret的挂载点——建议同时对Pod进行重建。
+
 ### Secret作为环境变量
 
+要想在Pod中通过[环境变量](../容器/容器环境.md)来使用Secret：
+
+- 1.创建或使用一个已有的Secret。多个Pod可以引用同一个Secret。
+- 2.修改相关的Pod定义，为Secret中的key添加一个环境变量。环境变量要通过`env[].valueFrom.secretKeyRef`来使用Secret中的key。
+- 3.修改镜像或命令行，让程序能够看到这些环境变量。
+
+一个栗子：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-env-pod
+spec:
+  containers:
+  - name: mycontainer
+    image: redis
+    env:
+      - name: SECRET_USERNAME
+        valueFrom:
+          secretKeyRef:
+            name: mysecret
+            key: username
+      - name: SECRET_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: mysecret
+            key: password
+  restartPolicy: Never
+```
+
+#### 从环境变量中使用Secret数据
+
+在容器中，Secret的key作为普通的环境变量出现，值则是base64编码后的数据。下面的命令是钻到上面创建好的Pod中执行的：
+
+```shell script
+echo $SECRET_USERNAME
+```
+
+输出：
+
+```text
+admin
+```
+
+```shell script
+echo $SECRET_PASSWORD
+```
+
+输出：
+
+```text
+1f2d1e2e67df
+```
+
 ### 用作imagePullSecrets
+
+`imagePullSecrets`字段是引用同一个命名空间下的Secret列表。可以使用`imagePullSecrets`将包含了Docker（或其他）镜像仓库密码的Secret传递给kubelet。kubelet会根据Pod的设置，使用这些信息来拉取私有仓库的镜像。关于`imagePullSecrets`的更多信息见[PodSpec API](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#podspec-v1-core)。
+
+#### 手动设置一个imagePullSecret
+
+可以从[容器镜像文档](../容器/镜像.md)中学习如果设置`imagePullSecrets`。
+
+### 自动附加imagePullSecrets
+
+可以手动创建`imagePullSecrets`，然后通过一个ServiceAccount来引用它。所有通过这个ServiceAccount创建的Pod，或者默认通过它进行创建，都会得到它里面设置的`imagePullSecrets`。关于这个小知识的详细介绍见[给ServiceAccount添加imagePullSecrets](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#add-imagepullsecrets-to-a-service-account)。
+
+### 为手动创建的Secret做自动挂载
+
+手动创建的Secret（比如包含一个访问GitHub账户的token）可以基于ServiceAccount自动附加到Pod上。详见[使用PodPreset为Pod注入信息](https://kubernetes.io/docs/tasks/inject-data-application/podpreset/)。
+
+## 详细内容
+
+### 限制
+
+Secret数据卷会进行校验，确保引用的对象真的是一个Secret对象。所以，Secret要在Pod之前进行创建。
+
+Secret资源也是依赖于[命名空间](../概要/Kubernetes对象/命名空间.md)的。只能被同一个命名空间下的Pod引用。
+
+每个Secret大小限制为1MB。这是为了避免创建过大的Secret，消耗apiserver和kubelet的内存。但是创建大量小Secret也同样消耗内存。对于Secret施加更复杂的内存限制是下一步的开发计划。
+
+kubelet只支持通过apiserver来获取Secret然后再提供给Pod使用。这包括直接用`kubectl`创建的Pod，以及间接地通过副本控制器创建的Pod。不包括那些基于kubelet的`--manifest-url`、`--config`选项，还有REST API（一般不用这个创建Pod）创建的Pod。
+
+如果Pod将Secret用作环境变量，Secret必须要在Pod之前创建，除非它们被标记成可选的。如果引用了不存在的Secret，Pod起不来。
+
+如果引用（`secretKeyRef`字段）了Secret中不存在的key，Pod同样起不来。
+
+如果通过`envFrom`导入Secret作为环境变量，而Secret中的某些key是无效的环境变量名，这些key就会被跳过。Pod可以正常启动。在事件列表中会有一条记录，原因为`InvalidVariableNames`，消息中包含了被跳过的无效的key列表。下面的栗子中的Pod引用了default/mysecret中的两个无效的key：`1badkey`和`2alsobad`。
+
+```shell script
+kubectl get events
+```
+
+输出如下：
+
+```text
+LASTSEEN   FIRSTSEEN   COUNT     NAME            KIND      SUBOBJECT                         TYPE      REASON
+0s         0s          1         dapi-test-pod   Pod                                         Warning   InvalidEnvironmentVariableNames   kubelet, 127.0.0.1      Keys [1badkey, 2alsobad] from the EnvFrom secret default/mysecret were skipped since they are considered invalid environment variable names.
+```
