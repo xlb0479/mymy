@@ -725,3 +725,285 @@ kubectl get events
 LASTSEEN   FIRSTSEEN   COUNT     NAME            KIND      SUBOBJECT                         TYPE      REASON
 0s         0s          1         dapi-test-pod   Pod                                         Warning   InvalidEnvironmentVariableNames   kubelet, 127.0.0.1      Keys [1badkey, 2alsobad] from the EnvFrom secret default/mysecret were skipped since they are considered invalid environment variable names.
 ```
+
+### Secret与Pod的生命周期
+
+通过调用k8s的API创建了一个Pod后，不会检查它引用的Secret是否存在。当Pod被调度时，kubelet会尝试获取Secret的数据。如果Secret不存在，或者无法连接到apiserver，拉取不到Secret的数据，kubelet会重复尝试。它会报告一个相关的事件，告诉你为什么Pod还没起来。一旦拉到了Secret，kubelet就会创建一个包含它的数据卷然后进行挂载。直到Pod的所有数据卷挂在完成才会启动Pod。
+
+## 用例
+
+### 用例：作为容器环境变量
+
+创建一个Secret
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysecret
+type: Opaque
+data:
+  USER_NAME: YWRtaW4=
+  PASSWORD: MWYyZDFlMmU2N2Rm
+```
+
+执行创建命令：
+
+```shell script
+kubectl apply -f mysecret.yaml
+```
+
+使用`envFrom`将Secret的所有数据用作环境变量。Secret的key就会变成环境变量的名字。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-test-pod
+spec:
+  containers:
+    - name: test-container
+      image: k8s.gcr.io/busybox
+      command: [ "/bin/sh", "-c", "env" ]
+      envFrom:
+      - secretRef:
+          name: mysecret
+  restartPolicy: Never
+```
+
+### 用例：Pod和sshkey
+
+创建一个包含ssh key的Secret：
+
+```shell script
+kubectl create secret generic ssh-key-secret --from-file=ssh-privatekey=/path/to/.ssh/id_rsa --from-file=ssh-publickey=/path/to/.ssh/id_rsa.pub
+```
+
+输出如下：
+
+```text
+secret "ssh-key-secret" created
+```
+
+还可以创建一个`kustomization.yaml`文件，用`secretGenerator`字段包含ssh的key。
+
+>**小心**：使用ssh key之前你最好脑子机密点：集群的其他用户可能也能访问到这个Secret。为集群中的目标用户群体创建一个ServiceAccount，如果用户受到打压，被按在墙角逼他说出密码，那就可以撤销这个账户。
+
+现在可以创建一个引用这个Secret的Pod，通过数据卷的形式来使用：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-test-pod
+  labels:
+    name: secret-test
+spec:
+  volumes:
+  - name: secret-volume
+    secret:
+      secretName: ssh-key-secret
+  containers:
+  - name: ssh-test-container
+    image: mySshImage
+    volumeMounts:
+    - name: secret-volume
+      readOnly: true
+      mountPath: "/etc/secret-volume"
+```
+
+容器跑起来之后，可以在下面的位置找到key：
+
+```shell script
+/etc/secret-volume/ssh-publickey
+/etc/secret-volume/ssh-privatekey
+```
+
+容器可以自由使用这些key来建立ssh连接。
+
+### 用例：持有生产/测试凭据的Pod
+
+本例中有俩Pod，一个Pod用到了包含生产环境凭据的Secret，另一个Pod用到了包含测试环境凭据的Secret。
+
+可以用包含`secretGenerator`字段的`kustomization.yaml`文件，或者直接用`kubectl create secret`命令来创建。
+
+```shell script
+kubectl create secret generic prod-db-secret --from-literal=username=produser --from-literal=password=Y4nys7f11
+```
+
+输出如下：
+
+```text
+secret "prod-db-secret" created
+```
+
+```shell script
+kubectl create secret generic test-db-secret --from-literal=username=testuser --from-literal=password=iluvtests
+```
+
+输出如下：
+
+```text
+secret "test-db-secret" created
+```
+
+>**注意**：
+>
+>诸如`$`、`\`、`*`、`=`以及`!`这种特殊字符会被[shell](https://en.wikipedia.org/wiki/Shell_(computing))进行解释，所以需要转义。在大部分shell中，最简单的转义方式就是加单引号（`'`）。比如你的密码是`S!B\*d$zDsb=`，那你的命令就应该是这样：
+>
+>```shell script
+>kubectl create secret generic dev-db-secret --from-literal=username=devuser --from-literal=password='S!B\*d$zDsb='
+>```
+>
+>如果是基于文件进行创建（`--from-file`），里面的内容不用转义（转个毛啊转）。
+
+现在来创建Pod吧，快乐的小二逼：
+
+```shell script
+cat <<EOF > pod.yaml
+apiVersion: v1
+kind: List
+items:
+- kind: Pod
+  apiVersion: v1
+  metadata:
+    name: prod-db-client-pod
+    labels:
+      name: prod-db-client
+  spec:
+    volumes:
+    - name: secret-volume
+      secret:
+        secretName: prod-db-secret
+    containers:
+    - name: db-client-container
+      image: myClientImage
+      volumeMounts:
+      - name: secret-volume
+        readOnly: true
+        mountPath: "/etc/secret-volume"
+- kind: Pod
+  apiVersion: v1
+  metadata:
+    name: test-db-client-pod
+    labels:
+      name: test-db-client
+  spec:
+    volumes:
+    - name: secret-volume
+      secret:
+        secretName: test-db-secret
+    containers:
+    - name: db-client-container
+      image: myClientImage
+      volumeMounts:
+      - name: secret-volume
+        readOnly: true
+        mountPath: "/etc/secret-volume"
+EOF
+```
+
+将Pod加到kustomization.yaml文件中：
+
+```shell script
+cat <<EOF >> kustomization.yaml
+resources:
+- pod.yaml
+EOF
+```
+
+应用这些对象：
+
+```shell script
+kubectl apply -k .
+```
+
+两个容器在下面这些位置上都会出现对应的文件，其中的值对应着它们各自的生产或测试环境：
+
+```text
+/etc/secret-volume/username
+/etc/secret-volume/password
+```
+
+注意这两个Pod的spec只有一处不同；这就有助于用一个通用的模板来创建不同能力的Pod。
+
+可以通过ServiceAccount进一步简化Pod定义：
+
+- 1.持有`prod-db-secret`的`prod-user`
+- 2.持有`test-db-secret`的`test-user`
+
+简化后的Pod定义：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: prod-db-client-pod
+  labels:
+    name: prod-db-client
+spec:
+  serviceAccount: prod-db-client
+  containers:
+  - name: db-client-container
+    image: myClientImage
+```
+
+### 用例：Secret数据卷中的隐藏文件
+
+可以在key的前面加一个点，让数据“隐藏”起来。这个key代表了一个点文件（dotfile），或者叫“隐藏”文件。比如挂载下面这个Secret数据卷，`secret-volume`：
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dotfile-secret
+data:
+  .secret-file: dmFsdWUtMg0KDQo=
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-dotfiles-pod
+spec:
+  volumes:
+  - name: secret-volume
+    secret:
+      secretName: dotfile-secret
+  containers:
+  - name: dotfile-test-container
+    image: k8s.gcr.io/busybox
+    command:
+    - ls
+    - "-l"
+    - "/etc/secret-volume"
+    volumeMounts:
+    - name: secret-volume
+      readOnly: true
+      mountPath: "/etc/secret-volume"
+```
+
+这个数据卷中只包含了一个文件，就是`.secret-file`，在`dotfile-test-container`容器中的路径是`/etc/secret-volume/.secret-file`。
+
+>**注意**：`ls -l`命令看不到以点开头的文件；必须要用`ls -la`才能看清这个世界。
+
+### 用例：只对Pod中一个容器可见的Secret
+
+我们来想象一个处理HTTP请求的程序，包含一些复杂的业务逻辑，然后还要用HMAC对某些消息进行签名。由于其中的逻辑复杂，可能不经意间需要进行远程文件读取，期间可能将私钥泄露给某些恶意的攻击者。
+
+我们可以把它们分成两个容器中的两个进程：一个前端容器，用来和用户交互，做业务逻辑，但是看不到私钥信息；另一个签名容器可以看到私钥，处理由前端发过来的简单的签名请求（比如通过localhost请求）。
+
+通过这种拆分方式，攻击者不能躺着攻击了，而是要开始炫技才有可能攻破我们的大门，比直接读取一个文件要困难很多。
+
+## 最佳实践
+
+### 客户端调用Secret API
+
+当部署了需要用Secret API交互的应用后，应当用[授权策略](https://kubernetes.io/docs/reference/access-authn-authz/authorization/)加以限制，比如[RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)。
+
+Secret持有的敏感信息的重要性可能会有多种情况，很多时候可能会导致k8s的权限越界（比如服务账号token），甚至逃逸到集群外部。（这段大部分都是引用了官方中文文档的翻译）。即便个别应用使用Secret的时候能够推断出它的能力有多大，同一个命名空间下的其他应用有可能会将这种努力付之东流。
+
+出于这些原因，对于一个命名空间下的Secret的`watch`和`list`请求就具有非常强大的能力，应当尽量去避免使用，因为如果能将Secret给list出来，那客户端就能看到这个命名空间下的所有Secret的数据。对于集群中所有Secret的`watch`和`list`权限应当保留给具有最高特权、系统级的组件，或者保留给灭霸。
+
+应用要访问Secret API的时候应该使用`get`请求。这样管理员就可以限制对所有Secret的访问，还能给应用设置它们需要的[实例访问白名单](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#referring-to-resources)。（这段也是引用了官方中文文档的翻译）
+
+如果要提高循环`get`的性能，客户端可以先创建一个引用Secret的资源，然后`watch`这个资源，而不是直接`watch`Secret，当引用发生变化的时候重新请求这个Secret。此外，[“批量watch” API](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/api-machinery/bulk_watch.md)，让客户端对多个资源进行独立的`watch`，这种方式我们也提上了日程，很可能发布到未来的版本中。
