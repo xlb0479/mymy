@@ -1007,3 +1007,33 @@ Secret持有的敏感信息的重要性可能会有多种情况，很多时候�
 应用要访问Secret API的时候应该使用`get`请求。这样管理员就可以限制对所有Secret的访问，还能给应用设置它们需要的[实例访问白名单](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#referring-to-resources)。（这段也是引用了官方中文文档的翻译）
 
 如果要提高循环`get`的性能，客户端可以先创建一个引用Secret的资源，然后`watch`这个资源，而不是直接`watch`Secret，当引用发生变化的时候重新请求这个Secret。此外，[“批量watch” API](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/api-machinery/bulk_watch.md)，让客户端对多个资源进行独立的`watch`，这种方式我们也提上了日程，很可能发布到未来的版本中。
+
+## 安全
+
+### 保护
+
+因为Secret可以独立于Pod创建，所以在创建、查看、编辑Pod的时候就不那么容易出现相关的泄露风险。而且系统还可以施加一些其他的防御措施，比如避免它们被写入到磁盘上。
+
+只有Pod需要的时候，Secret才会被发送到Pod所在的节点。kubelet会把Secret保存到`tmpfs`，这样就避免被写入到磁盘上。当相关Pod被删除后，kubelet也会同时删除Secret在当地旅行社的副本。
+
+一个节点上可能会有多个Pod的多个Secret。但是只有Pod请求的Secret才会可能被它的容器看到。所以一个Pod根本没可能访问到其他Pod的Secret。
+
+一个Pod中可能会有多个容器。当时每个容器必须通过`volumeMounts`来请求Secret的数据卷，才能看到里面的内容。这就有利于构造[Pod层面的安全分区](#用例：只对Pod中一个容器可见的Secret)。
+
+在大部分的k8s发行版中，用户和apiserver，以及apiserver和kubelet之间的通信都是基于SSL/TLS的。所以Secret在传输的时候也得到了保护。
+
+**功能状态**：`Kubernetes vv1.13 [beta]`
+
+可以为Secret数据开启[REST加密](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/)，这样Secret就不会明文保存到[etcd](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/)中了。
+
+### 风险
+
+- 在apiserver中，Secret数据是保存在[etcd](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/)中的；因此：
+  - 管理员应当为集群开启REST数据加密（需要v1.13版本及以上）。
+  - 管理员应当限制只能让管理员用户访问etcd。
+  - 对于不再被etcd使用的磁盘空间，管理员要及时清理。
+  - 如果是etcd集群，管理员最好为节点间通信做上SSL/TLS。
+- 如果你是用清单（JSON或YAML）文件创建的Secret，它的数据是经过base64b编码的，如果是分享或者提交到代码仓库了，那Secret就会被压缩。Base64*并不是*加密算法，几乎可以认为是跟明文一样的东西，只不过让外行人看着感觉很牛逼。
+- 应用从数据卷中读出Secret的数据后也要做到数据的安全，比如不要冒冒失失地把它们打印到日志文件中，或者传到了某些阴险的第三方程序中。
+- 如果一个用户能创建一个引用Secret的Pod，那他就能看到这个Secret中的数据。即便apiserver的策略不允许这个用户读取这个Secret，他也能够通过Pod将Secret的信息暴露出来。
+- 目前，只要在任意节点有了root权限，那就能通过apiserver读取到*任意*的Secret，这是因为模拟了kubelet。目前我们计划将Secret只发送到那些真正需要它们的节点上，这样就可以限制某个节点的root用户带来的安全问题。
