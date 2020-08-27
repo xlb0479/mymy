@@ -70,3 +70,86 @@ kubectl get pod test-pod -o jsonpath='{.spec.overhead}'
 ```text
 map[cpu:250m memory:120Mi]
 ```
+
+如果定义了ResourceQuota，容器请求值的总和还要加上`overhead`值。
+
+当调度器判断一个Pod应该发配到哪个节点时，会同时考虑Pod的`overhead`值和容器的请求值总和。对于上面这个栗子，调度器将请求值和损耗值加到一起，然后找到一个能够提供2.25CPU和320MiB内存的节点。
+
+一旦Pod被发配到某个节点，这个节点上的kubelet会给这个Pod创建一个新的[cgroup](https://kubernetes.io/docs/reference/glossary/?all=true#term-cgroup)。底层的容器运行时要在这个Pod中创建容器。
+
+如果每个容器还定义了资源上限（Guaranteed QoS或Bustrable QoS，同时还有资源上限），kubelet会给对应资源设置cgroup的上限值（CPU对应cpu.cfs_quota_us，内存对应memory.limit_in_bytes）。这个上限值就是每个容器的上限值总和加上PodSpec中定义的`overhead`。
+
+对于CPU来说，如果Pod的QoS是Guaranteed或者Burstable，kubelet会根据容器请求值的总和，加上PodSpec中的`overhead`来设定`cpu.shares`。
+
+来看下我们的栗子，检查一下容器的请求值：
+
+```shell script
+kubectl get pod test-pod -o jsonpath='{.spec.containers[*].resources.limits}'
+```
+
+总计请求值为2000m的CPU和200MiB的内存：
+
+```text
+map[cpu: 500m memory:100Mi] map[cpu:1500m memory:100Mi]
+```
+
+然后再跟节点上看到的值来对比一下：
+
+```shell script
+kubectl describe node | grep test-pod -B2
+```
+
+输出结果显示请求了2250m的CPU和320MiB的内存，其中包含了Pod损耗：
+
+```text
+  Namespace                   Name                CPU Requests  CPU Limits   Memory Requests  Memory Limits  AGE
+  ---------                   ----                ------------  ----------   ---------------  -------------  ---
+  default                     test-pod            2250m (56%)   2250m (56%)  320Mi (1%)       320Mi (1%)     36m
+```
+
+## 检查Pod的cgroup限制
+
+当组件正在运行的时候，检查一下Pod在节点上的内存cgroup。在下面的栗子中，我们在节点上使用了[`crictl`](https://github.com/kubernetes-sigs/cri-tools/blob/master/docs/crictl.md)，这是一个兼容CRI容器运行时的命令行工具。这个栗子中用来显示Pod损耗的方式是比较高阶的，一般人可学不会，正常来说，用户不需要去节点上直接检查cgroup。
+
+首先，选择一个节点，获取Pod的标识：
+
+```shell script
+# Run this on the node where the Pod is scheduled
+POD_ID="$(sudo crictl pods --name test-pod -q)"
+```
+
+然后你就可以获取Pod的cgroup路径：
+
+```shell script
+# Run this on the node where the Pod is scheduled
+sudo crictl inspectp -o=json $POD_ID | grep cgroupsPath
+```
+
+输出的cgroup路径包含了Pod的`pause`容器。Pod级别的cgroup是在上一级目录中。
+
+```text
+        "cgroupsPath": "/kubepods/podd7f4b509-cf94-4951-9417-d1087c92a5b2/7ccf55aee35dd16aca4189c952d83487297f3cd760f1bbf09620e206e7d0c27a"
+```
+
+此时看到，Pod的cgroup路径是`kubepods/podd7f4b509-cf94-4951-9417-d1087c92a5b2`。来检查一下Pod级别的内存cgroup设置：
+
+```shell script
+# Run this on the node where the Pod is scheduled.
+# Also, change the name of the cgroup to match the cgroup allocated for your pod.
+ cat /sys/fs/cgroup/memory/kubepods/podd7f4b509-cf94-4951-9417-d1087c92a5b2/memory.limit_in_bytes
+```
+
+结果是320MiB，跟我们想的一样：
+
+```text
+335544320
+```
+
+### 观测性
+
+在[kube-state-metrics](https://github.com/kubernetes/kube-state-metrics)中有一个`kube_pod_overhead`指标，可以用来标识是否用到了Pod损耗，而且还能用它来观察定义了损耗值的Pod是否能够稳定运行。这个功能在kube-state-metrics的1.9 release版本中还不可用，希望在接下来的版本中能用到它。目前，用户需要手动用kube-state-metrics源码进行编译才行。
+
+## 接下来……
+
+- [RuntimeClass](../容器/运行时Class.md)
+- [PodOverhead设计思想](https://github.com/kubernetes/enhancements/blob/master/keps/sig-node/20190226-pod-overhead.md)
