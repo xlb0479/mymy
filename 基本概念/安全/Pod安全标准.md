@@ -29,4 +29,4 @@ Pod的安全设置通常是由[安全上下文](https://v1-18.docs.kubernetes.io
 **控制权限**|**策略**
 -|-
 主机的Namespace|不能允许共享主机的namespace。<br/><br/>**受限的字段：**<br/>spec.hostNetwork<br/>spec.hostPID<br/>spec.hostIPC<br/><br/>**允许值：** false
-特权容器|特权容器关闭了很多安全机制，不能让这种孽畜出来祸祸。<br/><br/>**受限的字段：**<br/>spec.containers[*].securityContext.privileged<br/>spec.initContainers[*].securityContext.privileged<br/><br/>**允许值：** false、undefined/nil
+特权容器|特权容器关闭了很多安全机制，不能让这种孽畜出来祸祸。<br/><br/>**受限的字段：**<br/>spec.containers[\*].securityContext.privileged<br/>spec.initContainers[\*].securityContext.privileged<br/><br/>**允许值：** false、undefined/nil
