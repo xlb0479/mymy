@@ -20,4 +20,13 @@ Pod的安全设置通常是由[安全上下文](https://v1-18.docs.kubernetes.io
 
 特权（Privileged）策略是非常开放的，完全不受限的。这种策略一般是提供给系统——以及基础设施——层面的工作组件，由拥有特权且授信的用户来管理。
 
-特权策略的定义就是不加任何限制。
+特权策略的定义就是不加任何限制。对于默认啥都能干的场景（比如gatekeeper），特权策略不加任何约束，没啥用。相反，对于默认啥都不能干的场景（比如PodSecurityPolicy），特权策略要打开所有控制权限（关闭所有限制）。
+
+### Baseline/Default
+
+这种策略是为了便于常见的容器化应用来使用，避免了已知的提权风险。该策略主要提供给那些非核心应用的操作者和开发者。下面给出的控制权限应当都予以保证或拒绝。
+
+**控制权限**|**策略**
+-|-
+主机的Namespace|不能允许共享主机的namespace。<br/><br/>**受限的字段：**<br/>spec.hostNetwork<br/>spec.hostPID<br/>spec.hostIPC<br/><br/>**允许值：** false
+特权容器|特权容器关闭了很多安全机制，不能让这种孽畜出来祸祸。<br/><br/>**受限的字段：**<br/>spec.containers[*].securityContext.privileged<br/>spec.initContainers[*].securityContext.privileged<br/><br/>**允许值：** false、undefined/nil
