@@ -30,3 +30,7 @@ Pod的安全设置通常是由[安全上下文](https://v1-18.docs.kubernetes.io
 -|-
 主机的Namespace|不能允许共享主机的namespace。<br/><br/>**受限的字段：**<br/>spec.hostNetwork<br/>spec.hostPID<br/>spec.hostIPC<br/><br/>**允许值：** false
 特权容器|特权容器关闭了很多安全机制，不能让这种孽畜出来祸祸。<br/><br/>**受限的字段：**<br/>spec.containers[\*].securityContext.privileged<br/>spec.initContainers[\*].securityContext.privileged<br/><br/>**允许值：** false、undefined/nil
+Cap|不能允许使用除了[默认集合](https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities)以外的其他能力。<br/><br/>**受限的字段：**<br/>spec.containers[\*].securityContext.capabilities.add<br/>spec.initContainers[\*].securityContext.capabilities.add<br/><br/>**允许值：** empty (或者局限于某个固定的列表)
+HostPath数据卷|不让用这种数据卷。<br/><br/>**受限的字段：**<br/>spec.volumes[\*].hostPath<br/><br/>**允许值：** undefined/nil
+HostPort|不让用这种端口，或者局限在一个最小化的范围内。<br/><br/>**受限的字段：**<br/>spec.containers[\*].ports[*].hostPort<br/>spec.initContainers[\*].ports[\*].hostPort<br/><br/>**允许值：** 0、undefined (或者局限于某个固定的列表)
+AppArmor（可选）|对于可以支持该功能的主机，默认使用的是AppArmor的“runtime/default”策略。默认策略应当能够阻止对策略的重写和关闭，或者只能允许一部分的策略被重写。<br/><br/>**受限的字段：**<br/>metadata.annotations\['container.apparmor.security.beta.kubernetes.io/*'\]<br/><br/>**允许值：** “runtime/default”, undefined
