@@ -44,8 +44,12 @@ Sysctls|Sysctls可以关闭安全机制，或者影响到主机上的所有容�
 
 这种策略就是强制Pod去遵循最佳实践，会牺牲一些兼容性。这种策略的目标群体是那些对安全问题非常敏感的应用的操作员和开发者，以及低级授信用户。下面的空值权限应当予以保证或拒绝。
 
+*都是默认策略*
+
 **控制权限**|**策略**
 -|-
-*都是默认策略*
 数据卷类型|除了要限制HostPath数据卷，还要限制PV中定义的非主流的数据卷类型。<br/><br/>**受限的字段：**<br/>spec.volumes[\*].hostPath<br/>spec.volumes[\*].gcePersistentDisk<br/>spec.volumes[\*].awsElasticBlockStore<br/>spec.volumes[\*].gitRepo<br/>spec.volumes[\*].nfs<br/>spec.volumes[\*].iscsi<br/>spec.volumes[\*].glusterfs<br/>spec.volumes[\*].rbd<br/>spec.volumes[\*].flexVolume<br/>spec.volumes[\*].cinder<br/>spec.volumes[\*].cephFS<br/>spec.volumes[\*].flocker<br/>spec.volumes[\*].fc<br/>spec.volumes[\*].azureFile<br/>spec.volumes[\*].vsphereVolume<br/>spec.volumes[\*].quobyte<br/>spec.volumes[\*].azureDisk<br/>spec.volumes[\*].portworxVolume<br/>spec.volumes[\*].scaleIO<br/>spec.volumes[\*].storageos<br/>spec.volumes[\*].csi<br/><br/>**允许值：** undefined/nil
 提权（Privilege Escalation）|提权（比如通过set-user-ID或者set-group-ID文件）都应该被拒绝。<br/><br/>**受限的字段：**<br/>spec.containers[\*].securityContext.allowPrivilegeEscalation<br/>spec.initContainers[\*].securityContext.allowPrivilegeEscalation<br/><br/>**允许值：** false
+非root用户运行|要求容器必须用非root用户运行。<br/><br/>**受限的字段：**<br/>spec.securityContext.runAsNonRoot<br/>spec.containers[\*].securityContext.runAsNonRoot<br/>spec.initContainers[\*].securityContext.runAsNonRoot<br/><br/>**允许值：** true
+非root用户组（可选）|容器不能用root用户组运行，也不能提供GID。<br/><br/>**受限的字段：**<br/>spec.securityContext.runAsGroup<br/>spec.securityContext.supplementalGroups[\*]<br/>spec.securityContext.fsGroup<br/>spec.containers[\*].securityContext.runAsGroup<br/>spec.initContainers[\*].securityContext.runAsGroup<br/><br/>**允许值：** non-zero<br/>undefined/nil（除非是\`*.runAsGroup\`）
+Seccomp|seccomp必须要用“runtime/default”策略，或者可以允许额外的指定策略。<br/><br/>**受限的字段：**<br/>metadata.annotations\['seccomp.security.alpha.kubernetes.io/pod'\]<br/>>metadata.annotations\['container.seccomp.security.alpha.kubernetes.io/*'\]<br/><br/>**允许值：** 'runtime/default'<br/>undefined（容器注解）
