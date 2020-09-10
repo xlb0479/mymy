@@ -110,15 +110,336 @@ subjects:
 
 ## 栗子
 
+*这里我们假设你已经有了一个集群，并且开启了PodSecurityPolicy准入控制器，并且你是集群的管理员。*
+
+### 安装
+
+受限要创建一个命名空间和一个ServiceAccount来跑下面的栗子。我们用这个ServiceAccount来模拟一个非管理员用户。
+
+```shell script
+kubectl create namespace psp-example
+kubectl create serviceaccount -n psp-example fake-user
+kubectl create rolebinding -n psp-example fake-editor --clusterrole=edit --serviceaccount=psp-example:fake-user
+```
+
+为了明确我们用到哪个用户，减少一些重复的内容，我们建两个别名：
+
+```shell script
+alias kubectl-admin='kubectl -n psp-example'
+alias kubectl-user='kubectl --as=system:serviceaccount:psp-example:fake-user -n psp-example'
+```
+
+### 创建一个策略和Pod
+
+在文件中定义示例PodSecurityPolicy。这个策略会阻止特权Pod的创建。PodSecurityPolicy对象的名字必须是有效的[DNS子域名](../概要/Kubernetes对象/对象的名字和ID.md#DNS子域名)。
+
+```yaml
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: example
+spec:
+  privileged: false  # Don't allow privileged pods!
+  # The rest fills in some required fields.
+  seLinux:
+    rule: RunAsAny
+  supplementalGroups:
+    rule: RunAsAny
+  runAsUser:
+    rule: RunAsAny
+  fsGroup:
+    rule: RunAsAny
+  volumes:
+  - '*'
+```
+
+通过kubectl来创建：
+
+```shell script
+kubectl-admin create -f example-psp.yaml
+```
+
+现在，作为非特权用户，创建一个普通的Pod：
+
+```shell script
+kubectl-user create -f- <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name:      pause
+spec:
+  containers:
+    - name:  pause
+      image: k8s.gcr.io/pause
+EOF
+Error from server (Forbidden): error when creating "STDIN": pods "pause" is forbidden: unable to validate against any pod security policy: []
+```
+
+**发生了什么？**尽管创建了PodSecurityPolicy，不论是Pod的ServiceAccount还是`fake-user`都没有权限使用这个新的策略：
+
+```shell script
+kubectl-user auth can-i use podsecuritypolicy/example
+no
+```
+
+创建rolebinding，为`fake-user`授权策略的`use`动词：
+
+>**注意**：这可不是推荐的方式！真正规范的用法看[下一节](#运行另一个Pod)。
+
+```shell script
+kubectl-admin create role psp:unprivileged \
+    --verb=use \
+    --resource=podsecuritypolicy \
+    --resource-name=example
+role "psp:unprivileged" created
+
+kubectl-admin create rolebinding fake-user:psp:unprivileged \
+    --role=psp:unprivileged \
+    --serviceaccount=psp-example:fake-user
+rolebinding "fake-user:psp:unprivileged" created
+
+kubectl-user auth can-i use podsecuritypolicy/example
+yes
+```
+
+现在再来创建Pod：
+
+```shell script
+kubectl-user create -f- <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name:      pause
+spec:
+  containers:
+    - name:  pause
+      image: k8s.gcr.io/pause
+EOF
+pod "pause" created
+```
+
+有结果了！但如果要创建特权Pod的话依然会被拒绝：
+
+```shell script
+kubectl-user create -f- <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name:      privileged
+spec:
+  containers:
+    - name:  pause
+      image: k8s.gcr.io/pause
+      securityContext:
+        privileged: true
+EOF
+Error from server (Forbidden): error when creating "STDIN": pods "privileged" is forbidden: unable to validate against any pod security policy: [spec.containers[0].securityContext.privileged: Invalid value: true: Privileged containers are not allowed]
+```
+
+继续下面的学习之前删除这个Pod：
+
+```shell script
+kubectl-user delete pod pause
+```
+
 ### 运行另一个Pod
+
+这次我们闹个不太一样的：
+
+```text
+kubectl-user create deployment pause --image=k8s.gcr.io/pause
+deployment "pause" created
+
+kubectl-user get pods
+No resources found.
+
+kubectl-user get events | head -n 2
+LASTSEEN   FIRSTSEEN   COUNT     NAME              KIND         SUBOBJECT                TYPE      REASON                  SOURCE                                  MESSAGE
+1m         2m          15        pause-7774d79b5   ReplicaSet                            Warning   FailedCreate            replicaset-controller                   Error creating: pods "pause-7774d79b5-" is forbidden: no providers available to validate pod request
+```
+
+**发生了什么？**我们已经把`psp:unprivileged`角色绑定给了`fake-user`，为什么报了个`Error creating: pods "pause-7774d79b5-" is forbidden: no providers available to validate pod request`？关键在于SOURCE列的`replicaset-controller`。我们的fake-user用户成功的创建了Deployment（它又成功的创建了一个ReplicaSet），但是当ReplicaSet要创建Pod的时候，它没有被授权使用栗子中的PodSecurityPolicy。
+
+要想跑通，需要将`psp:unprivileged`绑定到Pod的ServiceAccount上。本例中（因为我们没有指定）ServiceAccount是`default`：
+
+```shell script
+kubectl-admin create rolebinding default:psp:unprivileged \
+    --role=psp:unprivileged \
+    --serviceaccount=psp-example:default
+rolebinding "default:psp:unprivileged" created
+```
+
+然后再重试协议爱，副本控制器应该就可以创建Pod了：
+
+```text
+kubectl-user get pods --watch
+NAME                    READY     STATUS    RESTARTS   AGE
+pause-7774d79b5-qrgcb   0/1       Pending   0         1s
+pause-7774d79b5-qrgcb   0/1       Pending   0         1s
+pause-7774d79b5-qrgcb   0/1       ContainerCreating   0         1s
+pause-7774d79b5-qrgcb   1/1       Running   0         2s
+```
+
+### 清理一下
+
+直接删除命名空间可以清理大部分示例资源：
+
+```shell script
+kubectl-admin delete ns psp-example
+namespace "psp-example" deleted
+```
+
+`PodSecurityPolicy`不是基于命名空间的资源，需要单独删除：
+
+```shell script
+kubectl-admin delete psp example
+podsecuritypolicy "example" deleted
+```
+
+### 示例策略
+
+这是一个你能创建的最小限制的策略，基本上等于没有使用Pod安全策略的准入控制器：
+
+```yaml
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: privileged
+  annotations:
+    seccomp.security.alpha.kubernetes.io/allowedProfileNames: '*'
+spec:
+  privileged: true
+  allowPrivilegeEscalation: true
+  allowedCapabilities:
+  - '*'
+  volumes:
+  - '*'
+  hostNetwork: true
+  hostPorts:
+  - min: 0
+    max: 65535
+  hostIPC: true
+  hostPID: true
+  runAsUser:
+    rule: 'RunAsAny'
+  seLinux:
+    rule: 'RunAsAny'
+  supplementalGroups:
+    rule: 'RunAsAny'
+  fsGroup:
+    rule: 'RunAsAny'
+```
+
+下面是一个受限的策略，需要非特权用户，阻止提权到root，用到了几个安全机制。
+
+```yaml
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: restricted
+  annotations:
+    seccomp.security.alpha.kubernetes.io/allowedProfileNames: 'docker/default,runtime/default'
+    apparmor.security.beta.kubernetes.io/allowedProfileNames: 'runtime/default'
+    seccomp.security.alpha.kubernetes.io/defaultProfileName:  'runtime/default'
+    apparmor.security.beta.kubernetes.io/defaultProfileName:  'runtime/default'
+spec:
+  privileged: false
+  # Required to prevent escalations to root.
+  allowPrivilegeEscalation: false
+  # This is redundant with non-root + disallow privilege escalation,
+  # but we can provide it for defense in depth.
+  requiredDropCapabilities:
+    - ALL
+  # Allow core volume types.
+  volumes:
+    - 'configMap'
+    - 'emptyDir'
+    - 'projected'
+    - 'secret'
+    - 'downwardAPI'
+    # Assume that persistentVolumes set up by the cluster admin are safe to use.
+    - 'persistentVolumeClaim'
+  hostNetwork: false
+  hostIPC: false
+  hostPID: false
+  runAsUser:
+    # Require the container to run without root privileges.
+    rule: 'MustRunAsNonRoot'
+  seLinux:
+    # This policy assumes the nodes are using AppArmor rather than SELinux.
+    rule: 'RunAsAny'
+  supplementalGroups:
+    rule: 'MustRunAs'
+    ranges:
+      # Forbid adding the root group.
+      - min: 1
+        max: 65535
+  fsGroup:
+    rule: 'MustRunAs'
+    ranges:
+      # Forbid adding the root group.
+      - min: 1
+        max: 65535
+  readOnlyRootFilesystem: false
+```
+
+[Pod安全标准](../安全/Pod安全标准.md#策略实例化)中有更多栗子。
 
 ## 策略参考
 
 ### Privileged
 
+**Privileged**——决定容器是否可以启用特权模式。默认情况下容器是不允许访问主机上的任何设备的，但是“特权”容器就可以。它可以让容器几乎可以拥有和主机进程一样的权限。对于要使用Linux Capabilities的容器这就比较有用，比如操作网络栈以及访问设备。
+
 ### 主机命名空间
 
+**HostPID**——控制容器是否可以共享主机的进程ID的namespace。注意一旦和ptrace配合使用的话，可以提权到容器外部（默认禁用ptrace）。
+
+**HostIPC**——控制容器是否可以共享主机的IPC的namespace。
+
+**HostNetwork**——控制Pod是否可以使用节点的网络namespace。这样可以允许Pod访问环回接口，作为localhost上的服务，可以嗅探到同一个节点上其他Pod的网络活动。
+
+**HostPorts**——提供一个可以开放在主机网络namespace中的端口列表。用`HostPortRange`来定义，带有`min`（包含）和`max`（不包含）。默认不允许主机端口。
+
 ### 数据卷和文件系统
+
+**Volumes**——提供一个允许的数据卷类型列表。这些允许的值对应的是创建数据卷的时候它们的来源。完整的数据卷类型见[数据卷类型](../存储/数据卷.md#数据卷类型)。可以用`*`来允许所有的数据卷类型。
+
+对于新的PSP，**推荐最小化的集合**：
+
+- configMap
+- downwardAPI
+- emptyDir
+- persistentVolumeClaim
+- secret
+- projected
+
+>**警告**：PodSecurityPolicy不会限制`PVC`引用的`PV`对象的类型数量，hostPath类型的`PV`也不支持只读访问模式。只有授信用户才应该有权限创建`PV`对象。
+
+**FSGroup**——控制一些数据卷的补充用户组。
+
+- *MustRunAs*——至少定义一个`range`。以第一个range的最小值为默认值。会校验所有range。
+- *MayRunAs*——至少定义一个`range`。可以允许`FSGroups`留空不设默认值。如果设置了`FSGroups`，会校验所有range。
+- *RunAsAny*——没有默认值。允许所有指定的`fsGroup`ID。
+
+**AllowedHostPaths**——指定允许用在hostPath数据卷的主机路径。空列表的话就没限制。它的值是一个对象列表，每个对象有一个`pathPrefix`字段，允许hostPath数据卷挂载到相同前缀的路径上，`readOnly`字段表示要以只读方式挂载。比如：
+
+```yaml
+allowedHostPaths:
+  # This allows "/foo", "/foo/", "/foo/bar" etc., but
+  # disallows "/fool", "/etc/foo" etc.
+  # "/foo/../" is never valid.
+  - pathPrefix: "/foo"
+    readOnly: true # only allow read-only mounts
+```
+
+>**警告**：
+>
+>对于不受限访问主机文件系统的容器，有很多方式可以实现提权，包括读取其他容器的数据，滥用系统服务的凭证，比如kubelet。
+>
+>可写的hostPath目录允许容器遍历到`pathPrefix`外部的主机文件系统。从1.11+开始，`readOnly: true`必须要用于**所有**`allowedHostPaths`上，有效的将访问限制在`pathPrefix`上。
+
+**ReadOnlyRootFilesystem**——要求容器必须用只读的根文件系统（比如无可写层）。
 
 ### FlexVolume驱动
 
