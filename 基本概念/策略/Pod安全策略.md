@@ -443,11 +443,63 @@ allowedHostPaths:
 
 ### FlexVolume驱动
 
+Flex数据卷只能使用列表中指定的FlexVolume驱动。空列表，或者是nil值，则代表没有限制。一定要确保[`volumes`](#数据卷和文件系统)字段中包含`flexVolume`数据卷类型；否则不会允许任何FlexVolume驱动。
+
+比如：
+
+```yaml
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: allow-flex-volumes
+spec:
+  # ... other spec fields
+  volumes:
+    - flexVolume
+  allowedFlexVolumes:
+    - driver: example/lvm
+    - driver: example/cifs
+```
+
 ### 用户和组
+
+**RunAsUser**——控制容器运行使用的用户ID。
+
+- *MustRunAs*——要求至少定义一个`range`。用第一个range中的最小值作为默认值。会校验所有range。
+- *MustRunAsNonRoot*——要求Pod的`runAsUser`必须非零，或者在镜像中使用了`USER`指令（通过数字UID指定）。如果Pod既没有`runAsNonRoot`也没有`runAsUser`，那就会自动被修改成`runAsNonRoot=true`，因此需要在容器中定义一个非零数字型的`USER`指令。这里不会有默认值。这种场景下强烈建议设置`allowPrivilegeEscalation=false`。
+- *RunAsAny*——没有默认值。允许定义任意的`runAsUser`。
+
+**RunAsGroup**——控制容器运行的主用户组ID。
+
+- *MustRunAs*——要求至少定义一个`range`。用第一个range中的最小值作为默认值。会校验所有range。
+- *MayRunAs*——不需要定义RunAsGroup。但是一旦有了RunAsGroup，那就必须要存在云已定义的range中。
+- *RunAsAny*——没有默认值。允许定义任意的`runAsGroup`。
+
+**SupplementalGroups**——控制容器添加的用户组ID。
+
+- *MustRunAs*——要求至少定义一个`range`。用第一个range中的最小值作为默认值。会校验所有range。
+- *MayRunAs*——至少定义一个`range`。允许没有`supplementalGroups`。如果有，会校验所有range。
+- *RunAsAny*——没有默认值。允许定义任意的`supplementalGroups`。
 
 ### 提权
 
+这个用来控制容器的`allowPrivilegeEscalation`选项。这个布尔值直接控制着是否会给容器进程设置[`no_new_privs`](https://www.kernel.org/doc/Documentation/prctl/no_new_privs.txt)选项。这个选项会阻止用`setuid`来修改生效的用户ID，保护文件以免被开启额外的cap（比如会阻止使用`ping`工具）。这个策略可以用于有效地实施`MustRunAsNonRoot`。
+
+**AllowPrivilegeEscalation**——控制是否允许用户将容器的SecurityContext设置为`allowPrivilegeEscalation=true`。它会默认允许，不会阻止setuid。将它设置为`false`就可以保证容器的子进程不会得到比父进程更多的权限。
+
+**DefaultAllowPrivilegeEscalation**——设置`allowPrivilegeEscalation`的默认值。如果没有这个策略的辅助，默认就是允许提权，不会阻止setuid。如果这种默认行为不是你想要的，那这个字段就可以用来讲默认行为改为拒绝，同时还能允许Pod主动声明`allowPrivilegeEscalation`。
+
 ### Capabilities
+
+Linux的capabilities是对传统超级用户权限更细粒度的分解。其中一些capabilities可以用来提权或者让容器越狱，可能会被PodSecurityPolicy限制。关于Linux的capabilities，见[capabilities(7)](https://man7.org/linux/man-pages/man7/capabilities.7.html)。
+
+下面的字段都包含了一个capabilities列表，定义方式同ALL_CAPS中的capability名字，无`CAP_`前缀。
+
+**AllowedCapabilities**——包含了可以为容器添加的capabilities的列表。这里的默认集合是隐式允许的。如果集合为空则意味着除了默认的集合外不允许添加其他的capabilities。可以用`*`来允许所有的capabilities。
+
+**RequiredDropCapabilities**——这里的capabilities必须从容器中删除。这些capabilities会从默认集合中删除，绝对不能再添加。`RequiredDropCapabilities`中的capabilities不能出现在`AllowedCapabilities`或`DefaultAddCapabilities`中。
+
+**DefaultAddCapabilities**——默认添加给容器的capabilities，还要加上运行时提供的默认值。如果运行时是Docker，去看一下[Docker文档](https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities)中关于默认的capabilities有哪些。
 
 ### SELinux
 
