@@ -503,10 +503,42 @@ Linux的capabilities是对传统超级用户权限更细粒度的分解。其中
 
 ### SELinux
 
+- **MustRunAs**——需要配置`seLinuxOptions`。默认使用`seLinuxOptions`。校验所有的`seLinuxOptions`。
+- **RunAsAny**——没有默认值。允许任意的`seLinuxOptions`。
+
 ### AllowedProcMountTypes
+
+`allowedProcMountTypes`是一个可用ProcMountType列表。为空或者为nil意味着只能用`DefaultProcMountType`。
+
+`DefaultProcMount`用容器运行时的默认值为/proc做只读处理或者屏蔽某些路径。大部分容器运行时都会屏蔽/proc下的某些路径，避免将特殊的设备或者信息暴露出来导致安全隐患。具体设置方式为字符串`Default`。
+
+其他的ProcMountType只有一种，那就是`UnmaskedProcMount`，它会绕过容器运行时的默认屏蔽行为，保证容器新创建的/proc能够保持原样不被修改。具体设置方式为字符串`Unmasked`。
 
 ### AppArmor
 
+通过PodSecurityPolicy上面的注解来控制。参见[AppArmor文档](https://v1-18.docs.kubernetes.io/docs/tutorials/clusters/apparmor/#podsecuritypolicy-annotations)。
+
 ### Seccomp
 
+Pod中关于seccomp的配置可以通过PodSecurityPolicy上面的注解来控制。seccomp目前在k8s中还是一个alpha版本的功能。
+
+**seccomp.security.alpha.kubernetes.io/defaultProfileName**——用来设置为容器应用的默认seccomp配置注解。可能的值包括：
+
+- `unconfined`——如果没有提供其他选择，不会为容器进程应用seccomp（这是k8s中的默认行为）。
+- `runtime/default`——使用磨人的容器运行时配置。
+- `docker/default`——使用Docker默认的seccomp配置。从1.11开始已经弃用了。用`runtime/default`代替。
+- `localhost/<path>`——在节点的`<seccomp_root>/<path>`路径下定义一个配置文件，`<seccomp_root>`是通过kubelet的`--seccomp-profile-root`选项来定义的。
+
+**seccomp.security.alpha.kubernetes.io/allowedProfileNames**——这个注解用来定义允许哪些值可以用在Pod的seccomp注解上。具体值为逗号间隔的可用值。可能的值上面已经列出来了，再加上`*`，代表允许所有配置。如果没有这个注解，意味着不能修改默认值。
+
 ### Sysctl
+
+默认是允许所有安全的sysctl的。
+
+- `forbiddenSysctls`——排除所有指定的sysctl。可以在这个列表中禁用安全和不安全的sysctl。要想禁用全部，那就设置`*`。
+- `allowedUnsafeSysctls`——对于默认禁用的sysctl可以在这里启用，但是它们不能同时出现在`forbiddenSysctls`中。
+
+## 下一步……
+
+- 学习[Pod安全标准](../安全/Pod安全标准.md)了解推荐的策略。
+- 参考[Pod安全策略参考手册](https://v1-18.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.18/#podsecuritypolicy-v1beta1-policy)了解API的细节。
