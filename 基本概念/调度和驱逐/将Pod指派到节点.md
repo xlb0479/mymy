@@ -73,6 +73,64 @@ spec:
 
 ## 节点隔离/限制
 
-给节点打标签可以让Pod定位到某些或者某一组节点上。这样可以保证特定的Pod只会运行在带有特定隔离、安全、或管控属性的节点上。当你带着这种目的使用标签时，强烈建议你使用那些不会被kubelet进程修改的标签key。
+给节点打标签可以让Pod定位到某些或者某一组节点上。这样可以保证特定的Pod只会运行在带有特定隔离、安全、或管控属性的节点上。当你带着这种目的使用标签时，强烈建议你使用那些不会被kubelet进程修改的标签。这样可以避免节点通过kubelet的凭据给节点对象打上这些标签，进而影响调度器把工作负载（wordload）调度到这个节点上。（最后这段话没明白）
+
+`NodeRestriction`准入控制器可以阻止kubelet去设置或修改带有`node-restriction.kubernetes.io/`前缀的标签。如果要使用这种前缀的标签来做节点隔离：
+
+- 确保你使用了[节点授权](https://v1-18.docs.kubernetes.io/docs/reference/access-authn-authz/node/)并*开启*了[NodeRestriction准入控制器](https://v1-18.docs.kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#noderestriction)。
+- 使用`node-restriction.kubernetes.io/`前缀给节点打标签，然后在节点选择器中使用这些标签。比如`example.com.node-restriction.kubernetes.io/fips=true`或者`example.com.node-restriction.kubernetes.io/pci-dss=true`。
 
 ## 亲和性与反亲和性
+
+`nodeSelector`可以通过非常简单的方式将Pod约束在带有特定标签的节点上。而亲和性与反亲和性进一步扩展了这些约束。关键点在于
+
+- 1.亲和性与反亲和性的语法更加具有表现力，可入围奥斯卡奖的那种。这种语法不光提供精确匹配，在其基础之上还能提供逻辑AND操作。
+- 2.你可以将规则定义为“软蛋”或“优先考虑”规则，而不是强制规则，这样一旦调度器无法得到满足，Pod依然可以被调度。
+- 3.可以针对节点上运行的其他Pod的标签来进行约束（或者其他的拓扑域），而不仅仅针对节点的标签，这样就可以让Pod和Pod之间产生相斥或相吸。
+
+亲和性分两部分，“节点亲和性”和“Pod间亲和性/反亲和性”。节点亲和性类似于`nodeSelector`（但是具有上面列出的前两条优势），Pod间亲和性/反亲和性则是针对Pod的标签进行约束，如上面第三条说的那样，同时还具有前两条优势。
+
+### 节点亲和性
+
+节点亲和性概念上类似于`nodeSelector`——允许你通过节点标签来约束Pod可以被调度到哪些节点上。
+
+目前有两种节点亲和性，分别是`requiredDuringSchedulingIgnoredDuringExecution`和`preferredDuringSchedulingIgnoredDuringExecution`。你可以把它俩简单的认为是“硬核”跟“软蛋”，因为前者对于一个Pod要想调度到一个节点上*必须*满足其声明的规则（跟`nodeSelector`一样，但是语法更具有表现力，透视观比较好，人物刻画的也不错），而后者则意味着*优先考虑*，调度器会尽力满足，但并不保证一定。名字中“IgnoredDuringExecution”的含义同样也是跟`nodeSelector`的原理类似，如果一个节点在运行时修改了标签导致Pod的亲和性规则不再满足，那么这个Pod依然会运行在这个节点上。未来我们还打算实现`requiredDuringSchedulingRequiredDuringExecution`，跟`requiredDuringSchedulingIgnoredDuringExecution`类似，但是它会将不满足亲和性约束的Pod从节点上剔除掉。
+
+因此比如一个`requiredDuringSchedulingIgnoredDuringExecution`的栗子，可能就是说“这个Pod只能运行在带有Intel CPU的节点上”，再比如一个`preferredDuringSchedulingIgnoredDuringExecution`的栗子，可能是在说“让这些Pod运行在XYZ可用区中，但如果实在不行的话，也可以运行在别的地方”。
+
+节点亲和性是定义在PodSpec中的`affinity`里面的`nodeAffinity`字段中。
+
+下面是一个使用节点亲和性的栗子：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: with-node-affinity
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: kubernetes.io/e2e-az-name
+            operator: In
+            values:
+            - e2e-az1
+            - e2e-az2
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 1
+        preference:
+          matchExpressions:
+          - key: another-node-label-key
+            operator: In
+            values:
+            - another-node-label-value
+  containers:
+  - name: with-node-affinity
+    image: k8s.gcr.io/pause:2.0
+```
+
+上面这份节点亲和性规则指明，Pod只能被调度到节点标签key为`kubernetes.io/e2e-az-name`且值为`e2e-az1`或`e2e-az2`的节点上。此外，在满足该规则的基础上，优先考虑那些带有标签key为`another-node-label-key`且值为`another-node-label-value`的节点。
+
+你看到我们在栗子中使用的`In`操作符。新的节点亲和性语法支持这些操作符：`In`、`NotIn`、`Exists`、`DoesNotExist`、`Gt`、`Lt`。可以通过`NotIn`和`DoesNotExist`来实现节点反亲和性，或者使用[冷屁股](热脸和冷屁股.md)让Pod远离某些节点。
