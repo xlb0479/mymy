@@ -134,3 +134,61 @@ spec:
 上面这份节点亲和性规则指明，Pod只能被调度到节点标签key为`kubernetes.io/e2e-az-name`且值为`e2e-az1`或`e2e-az2`的节点上。此外，在满足该规则的基础上，优先考虑那些带有标签key为`another-node-label-key`且值为`another-node-label-value`的节点。
 
 你看到我们在栗子中使用的`In`操作符。新的节点亲和性语法支持这些操作符：`In`、`NotIn`、`Exists`、`DoesNotExist`、`Gt`、`Lt`。可以通过`NotIn`和`DoesNotExist`来实现节点反亲和性，或者使用[冷屁股](热脸和冷屁股.md)让Pod远离某些节点。
+
+如果你同时定义了`nodeSelector`和`nodeAffinity`，Pod要想调度到一个节点上，就必须两个条件*都*满足才行。
+
+过你的`nodeAffinity`中定义了多个`nodeSelectorTerms`，那么当**其中一个**`nodeSelectorTerms`满足时，Pod就可以被调度到这个节点上。
+
+如果你的`nodeSelectorTerms`中定义了多个`matchExpressions`，那**只有当全部**`matchExpressions`都满足的情况下Pod才能调度到这个节点上。
+
+如果你修改或者删除了节点上的标签，已经存在的Pod是不会被删除的。换句话说，亲和性的判定是发生在Pod调度的时候。
+
+`preferredDuringSchedulingIgnoredDuringExecution`中的`weight`字段的取值范围是1-100。对于能够满足所有调度要求（资源请求、RequiredDuringScheduling亲和性表达式等等）的节点，调度器会遍历该字段的所有元素，如果节点匹配对应的MatchExpressions那就再加上“weight”。然后把这个分值跟其他优先级函数的结果结合起来。最终得分最高者获得本次比赛的冠军。
+
+### Pod间亲和性和反亲和性
+
+Pod间亲和性与反亲和性可以让你*基于那些已经运行在节点上的Pod的标签*来约束Pod的位置，而不是直接基于节点本身的标签。规则大概就是说“这个Pod应当（如果是反亲和性那就是不应当）运行在X上，并且X上已经运行了一个或者多个满足规则Y的Pod”。规则Y通过节点选择器来表达，而且还可以加上命名空间；和节点不同的是，Pod是基于命名空间的（因此Pod上面的标签也是基于命名空间的），对于Pod进行标签选择的时候必须要指明选择器要应用于哪个命名空间。因此X就可以是一个拓扑域，比如节点、机架、可用区、地域等等。写的时候要使用`topologyKey`，也就是系统用来标明节点拓扑域的标签key；比如在[插曲：内置的节点标签](#插曲：内置的节点标签)中列出的key。
+
+>**注意**：Pod间亲和性与反亲和性需要执行大量的处理逻辑，大大规模集群中会明显降低调度的效率。不建议在好几百个节点的集群中使用它们。
+
+>**注意**：Pod反亲和性需要节点的标签保持一致，换句话说就是集群中的每个节点都应该有能够匹配`topologyKey`的标签。如果一些或者全部节点都没有`topologyKey`指定的标签，那将会导致不可预料的事情发生，比如蓝屏、花瓶、电视突然没信号了。
+
+跟节点亲和性类似，Pod的亲和性与反亲和性也有两种，叫做`requiredDuringSchedulingIgnoredDuringExecution`以及`preferredDuringSchedulingIgnoredDuringExecution`，同样分别代表“软蛋”和“硬核”要求。可以看一下前面关于节点亲和性的介绍。比如`requiredDuringSchedulingIgnoredDuringExecution`亲和性就是说“将ServiceA和ServiceB的Pod放在一起，因为它们的交互比较多”，又比如`preferredDuringSchedulingIgnoredDuringExecution`反亲和性就是说“将这个Service的Pod均匀分布在各个可用区上”（这里如果用硬核要求的话就不太讲理了，因为你的Pod数量很有可能大于可用区数量）。
+
+Pod间亲和性定义在PodSpec中的`affinity`里的`podAffinity`字段。而Pod间反亲和性则是定义在PodSpec中的`affinity`里的`podAntiAffinity`字段。
+
+#### 使用Pod亲和性的栗子：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: with-pod-affinity
+spec:
+  affinity:
+    podAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+          - key: security
+            operator: In
+            values:
+            - S1
+        topologyKey: failure-domain.beta.kubernetes.io/zone
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: security
+              operator: In
+              values:
+              - S2
+          topologyKey: failure-domain.beta.kubernetes.io/zone
+  containers:
+  - name: with-pod-affinity
+    image: k8s.gcr.io/pause:2.0
+```
+
+这里定义了一个亲和性规则和一个反亲和性规则。本例中，`podAffinity`是`requiredDuringSchedulingIgnoredDuringExecution`，`podAntiAffinity`是`preferredDuringSchedulingIgnoredDuringExecution`。其中亲和性规则就是说Pod所在的节点必须是在同样的可用区中并且已经至少有一个标签key为“security”值为“S1”的Pod运行在上面了。（更准确地讲，Pod可以运行在节点N，前提是节点N要有一个key为`failure-domain.beta.kubernetes.io/zone`的标签，其值为V，这样集群中就至少要有一个标签key为`failure-domain.beta.kubernetes.io/zone`且值为V的节点，然后这个节点上要运行着一个标签key为“security”且值为“S1”的Pod。）其中的反亲和性规则是说Pod不能被调度到那些已经运行了标签key为“security”且值为“S2”Pod的节点所在的可用区上。可以去看看[设计文档](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/scheduling/podaffinity.md)，里面有很多Pod亲和性与反亲和性的栗子，`requiredDuringSchedulingIgnoredDuringExecution`和`preferredDuringSchedulingIgnoredDuringExecution`的都有。
