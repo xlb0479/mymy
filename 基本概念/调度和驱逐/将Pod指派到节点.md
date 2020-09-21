@@ -192,3 +192,126 @@ spec:
 ```
 
 这里定义了一个亲和性规则和一个反亲和性规则。本例中，`podAffinity`是`requiredDuringSchedulingIgnoredDuringExecution`，`podAntiAffinity`是`preferredDuringSchedulingIgnoredDuringExecution`。其中亲和性规则就是说Pod所在的节点必须是在同样的可用区中并且已经至少有一个标签key为“security”值为“S1”的Pod运行在上面了。（更准确地讲，Pod可以运行在节点N，前提是节点N要有一个key为`failure-domain.beta.kubernetes.io/zone`的标签，其值为V，这样集群中就至少要有一个标签key为`failure-domain.beta.kubernetes.io/zone`且值为V的节点，然后这个节点上要运行着一个标签key为“security”且值为“S1”的Pod。）其中的反亲和性规则是说Pod不能被调度到那些已经运行了标签key为“security”且值为“S2”Pod的节点所在的可用区上。可以去看看[设计文档](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/scheduling/podaffinity.md)，里面有很多Pod亲和性与反亲和性的栗子，`requiredDuringSchedulingIgnoredDuringExecution`和`preferredDuringSchedulingIgnoredDuringExecution`的都有。
+
+合法的操作符有`In`、`NotIn`、`Exists`、`DoesNotExist`。
+
+原则上来说，`topologyKey`可以是任意合法的标签key。但是从性能和安全角度考虑，这里有一些限制：
+
+- 1.对于亲和性，`requiredDuringSchedulingIgnoredDuringExecution`和`preferredDuringSchedulingIgnoredDuringExecution`都不允许空的`topologyKey`。
+- 2.对于反亲和性，同样`requiredDuringSchedulingIgnoredDuringExecution`和`preferredDuringSchedulingIgnoredDuringExecution`都不允许空的`topologyKey`。
+- 3.对于`requiredDuringSchedulingIgnoredDuringExecution`的反亲和性，准入控制器`LimitPodHardAntiAffinityTopology`会限制`topologyKey`必须是`kubernetes.io/hostname`。如果你想用自定义的拓扑，那就要修改准入控制器，或者关闭它。
+- 4.除了上面列出的条件，其他合法的标签key都是可以的。
+
+除了`labelSelector`和`topologyKey`，你还可以设置一个`namespaces`列表，用来声明`labelSelector`应用的命名空间（这个字段跟`labelSelector`和`topologyKey`在同一级）。如果省略该列表或者为空，那就跟Pod定义的命名空间一起走。
+
+不论是亲和性还是反亲和性，`requiredDuringSchedulingIgnoredDuringExecution`的所有`matchExpressions`必须全部满足才能让Pod调度到该节点上。
+
+#### 更实际的栗子
+
+当用在比如ReplicaSet、StatefulSet、Deployment等其他高级集合中时，Pod间亲和性与反亲和性就变得更加有用了。可以方便的将一组工作负载定位到同一个拓扑中，比如同一个节点上。
+
+##### 总是定位到同一个节点
+
+在一个三节点集群中，web应用同样有内存缓存，比如Redis。我们希望让web服务器能够尽可能的跟缓存挨在一起。
+
+下面这段yaml就定义了一个简单的Redis的Deployment，包含了三个副本，标签选择器为`app=store`。Deployment中定义了`PodAntiAffinity`，保证调度器不会让三个副本都调度到同一个节点上去。
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-cache
+spec:
+  selector:
+    matchLabels:
+      app: store
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: store
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - store
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: redis-server
+        image: redis:3.2-alpine
+```
+
+下面是web服务器的Deployment定义，包含了`podAntiAffinity`和`podAffinity`。这样就会告诉调度器，所有的副本必须要跟带有`app=store`标签的Pod在一起。同时还可以保证每个web服务器副本不会定位到同一个节点上。
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-server
+spec:
+  selector:
+    matchLabels:
+      app: web-store
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: web-store
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - web-store
+            topologyKey: "kubernetes.io/hostname"
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - store
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: web-app
+        image: nginx:1.16-alpine
+```
+
+当我们创建了上面这两个Deployment，我们的三节点集群就会像下面这个样子。
+
+**节点1**|**节点2**|**节点3**
+-|-|-
+*webserver-1*|*webserver-2*|*webserver-3*
+*cache-1*|*cache-2*|*cache-3*
+
+看看，`web-server`的3个副本自动的和缓存搭配在了一起。
+
+```shell script
+kubectl get pods -o wide
+```
+
+输出如下：
+
+```text
+NAME                           READY     STATUS    RESTARTS   AGE       IP           NODE
+redis-cache-1450370735-6dzlj   1/1       Running   0          8m        10.192.4.2   kube-node-3
+redis-cache-1450370735-j2j96   1/1       Running   0          8m        10.192.2.2   kube-node-1
+redis-cache-1450370735-z73mh   1/1       Running   0          8m        10.192.3.1   kube-node-2
+web-server-1287567482-5d4dz    1/1       Running   0          7m        10.192.2.3   kube-node-1
+web-server-1287567482-6f7v5    1/1       Running   0          7m        10.192.4.3   kube-node-3
+web-server-1287567482-s330j    1/1       Running   0          7m        10.192.3.2   kube-node-2
+```
+
+##### 绝不定到同一个节点上
+
+上面的栗子用了`PodAntiAffinity`规则，并且有`topologyKey: "kubernetes.io/hostname"`，用于部署Redis集群，这样就不会存在某两个实例定位到同一个节点上的情况了。见[ZooKeeper教程]()
