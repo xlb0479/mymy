@@ -314,4 +314,38 @@ web-server-1287567482-s330j    1/1       Running   0          7m        10.192.3
 
 ##### 绝不定到同一个节点上
 
-上面的栗子用了`PodAntiAffinity`规则，并且有`topologyKey: "kubernetes.io/hostname"`，用于部署Redis集群，这样就不会存在某两个实例定位到同一个节点上的情况了。见[ZooKeeper教程]()
+上面的栗子用了`PodAntiAffinity`规则，并且有`topologyKey: "kubernetes.io/hostname"`，用于部署Redis集群，这样就不会存在某两个实例定位到同一个节点上的情况了。见[ookeeKeeper教程](https://v1-18.docs.kubernetes.io/docs/tutorials/stateful-application/zookeeper/#tolerating-node-failure)，里面有一个用StatefulSet和反亲和性实现高可用的栗子，用了同样的技巧。
+
+## nodeName
+
+`nodeName`是最简单的节点约束形式，但由于它本身的限制导致用得不多。`nodeName`是PodSpec中的一个字段。如果非空，调度器会忽略Pod（忽略Pod？忽略什么Pod？），然后指定节点上的kubelet就会尝试运行这个Pod。所以呢，如果PodSpec中定义了`nodeName`，它的优先级要高于上面介绍的节点选择机制。
+
+使用`nodeName`进行节点选择带来的限制有：
+
+- 如果指定的节点不存在，Pod无法运行，某些情况下可能会被自动删除。
+- 如果指定节点可用资源无法满足Pod，Pod则运行失败并给出具体原因，比如OutOfMemory或者OutOfCpu。
+- 在云环境中的节点名可能无法预知或者无法保持稳定。
+
+下面是一个使用`nodeName`的栗子：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+  nodeName: kube-01
+```
+
+上面这个Pod就会运行在kube-01节点上。
+
+## 下一步……
+
+[冷屁股](热脸和冷屁股.md)可以让节点*排斥*某些Pod。
+
+[节点亲和性](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/scheduling/nodeaffinity.md)以及[Pod间亲和性/反亲和性](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/scheduling/podaffinity.md)的设计文档中包含了这些特性的背景知识。
+
+当Pod指派到一个节点上之后，kubelet负责运行这个Pod并分配节点本地的资源。[拓扑管理](https://v1-18.docs.kubernetes.io/docs/tasks/administer-cluster/topology-manager/)可以在节点级资源分配决策上插一杠子。
