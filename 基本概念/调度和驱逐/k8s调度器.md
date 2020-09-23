@@ -41,7 +41,7 @@ kube-scheduler为Pod选择一个节点拢共分两步：
 
 ## 下一步……
 
-- 阅读[调度器性能调优](调度器性能调优.md)
+- 阅读[调度器的性能调优](调度器的性能调优.md)
 - 阅读[Pod拓扑约束](../业务组件/泡德（Pod）/Pod拓扑约束.md)
 - 阅读kube-scheduler的[参考文档](https://v1-18.docs.kubernetes.io/docs/reference/command-line-tools-reference/kube-scheduler/)
 - 学习[配置多个调度器](https://v1-18.docs.kubernetes.io/docs/tasks/extend-kubernetes/configure-multiple-schedulers/)
