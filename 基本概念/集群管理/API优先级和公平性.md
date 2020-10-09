@@ -139,4 +139,44 @@ spec:
 
 FlowSchema的`distinguisherMethod.type`决定了匹配的请求会如何分到flow中。可以是`ByUser`，一个用户的请求就不会挤死另一个用户的请求，或者是`ByNamespace`，一个命名空间的请求就不会挤死另一个命名空间的请求，或者留空（或者直接删掉`distinguisherMethod`这个字段），这样所有匹配的请求都会分到同一个flow中。具体的选择要依赖于资源以及你的具体环境。
 
+## 排错
+
+开启了API优先级和公平性之后，apiserver给HTTP响应的时候，会带上两个额外的header：`X-Kubernetes-PF-FlowSchema-UID`和`X-Kubernetes-PF-PriorityLevel-UID`，分别标记了请求所匹配的FlowSchema和优先级。API对象的名字并不会包含在里面，用户有可能没有权限看到它们，所以当你进行排错工作的时候，可以用下面的命令：
+
+```shell script
+kubectl get flowschemas -o custom-columns="uid:{metadata.uid},name:{metadata.name}"
+kubectl get prioritylevelconfigurations -o custom-columns="uid:{metadata.uid},name:{metadata.name}"
+```
+
+这样就可以得到FlowSchema和PriorityLevelConfiguration的UID和名字信息。
+
+## 观测性
+
+### 指标
+
+当你开启了API优先级和公平性之后，kube-apiserver会暴露一些额外的指标。监控这些指标可以让你发现有问题的配置，避免重要的流量被卡脖子，还可以发现某些搞事情的工作负载正在祸祸你的系统。
+
+- `apiserver_flowcontrol_rejected_requests_total`是一个Counter向量（从服务启动后开始不断累加），统计了被拒绝的请求数，维度按`flowSchema`标签（请求匹配的FlowSchema）、`priorityLevel`标签（请求被赋予的优先级）划分，还有`reason`标签。`reason`标签的值包含：
+    - `queue-full`，表示队列中已经有太多的请求了，
+    - `concurrency-limit`，表示配置了PriorityLevelConfiguration，而不是将请求进行排队，或者
+    - `time-out`，表示当请求排队持续时间达到上限时依然处于队列中。
+- `apiserver_flowcontrol_dispatched_requests_total`是一个Counter向量（从服务启动后开始不断累加），统计了开始处理的请求数，维度按`flowSchema`标签（表示请求匹配的FlowSchema）和`priorityLevel`标签（表示请求被赋予的优先级）划分。
+- `apiserver_current_inqueue_requests`，它是一个Gauge向量，表示最近排队请求数的高水位线，按`request_kind`标签分组，其值可能是`mutating`或`readOnly`。这项高水位线标记代表了最近一秒钟时间窗口内完成的数量。这项指标跟以前的`apiserver_current_inflight_requests`Gauge向量形成了互补之势，后者代表了最近一个时间窗口内正在被响应的请求数的高水位线。
+- `apiserver_flowcontrol_read_vs_write_request_count_samples`是一个Histogram向量，表示了当时请求数的观测值，维度包含`phase`标签（其值包括`waiting`和`executing`）和`request_kind`标签（其值包括`mutating`和`readOnly`）。这项观测值以较高频率进行周期性统计。
+- `apiserver_flowcontrol_read_vs_write_request_count_watermarks`是一个Histogram向量，表示请求数的高或低水位线，维度包含`phase`标签（其值包括`waiting`和`executing`）和`request_kind`标签（其值包括`mutating`和`readOnly`）；`mark`标签的值只有`high`和`low`。此项水位线值的累计根据`apiserver_flowcontrol_read_vs_write_request_count_samples`的窗口而定，每当后者增加一个统计值，前者就统计一次。这些水位线值展示了每次采样之间的取值范围。
+- `apiserver_flowcontrol_current_inqueue_requests`是一个Gauge向量，统计了排队中（尚未开始执行）请求数的瞬时值，维度包含`priorityLevel`和`flowSchema`标签。
+- `apiserver_flowcontrol_current_executing_requests`是一个Gauge向量，包含了执行中（不是在队列中等待）请求数的瞬时值，维度包含`priorityLevel`和`flowSchema`标签。
+- `apiserver_flowcontrol_priority_level_request_count_samples`是一个Histogram向量，包含了当时请求数的观测值，维度包含`phase`标签（其值包括`waiting`和`executing`）和`priorityLevel`标签。每项观测值都是周期性统计，从相关类型的上一次活动开始统计。观测值也是按较高频率统计的。
+- `apiserver_flowcontrol_priority_level_request_count_watermarks`是一个Histogram向量，表示请求数的高或低水位线，维度包含`phase`标签（其值包括`waiting`和`executing`）和`priorityLevel`标签；`mark`标签的值只有`high`和`low`。此项水位线值的累计根据`apiserver_flowcontrol_priority_level_request_count_samples`的窗口而定，每当后者增加一个统计值，前者就统计一次。这些水位线值展示了每次采样之间的取值范围。
+- `apiserver_flowcontrol_request_queue_length_after_enqueue`是一个Histogram向量，表示队列的长度，维度包括`priorityLevel`和`flowSchema`标签，从入队的请求中采样。每一个入队的请求都会为它的Histogram贡献一个采样，请求入队后就会报告一次队列的长度。注意相对于一个公平的测量，这项指标会给出不同的统计值。
+
+>**注意**：这个Histogram中的异常值意味着某一个flow（也就是根据具体配置可能是一个用户或一个命名空间的请求）可能正在大量狂灌apiserver，并且已经出现瓶颈了。与之相比，如果某个优先级的Histogram显示它所有队列的长度都要比其他优先级的长，可能需要增加对应PriorityLevelConfiguration中的并发配额（concurrency share）了。
+
+- `apiserver_flowcontrol_request_concurrency_limit`是一个Gauge向量，表示计算出来的并发限制（基于apiserver的总体并发限制和PriorityLevelConfiguration的并发配额），维度包括`priorityLevel`标签。
+- `apiserver_flowcontrol_request_wait_duration_seconds`是一个Histogram向量，表示请求排队排了多久，维度包含`flowSchema`标签（表示请求匹配的FlowSchema）和`priorityLevel`标签（表示请求被赋予的优先级），还有`execute`标签（表示请求是否开始执行）。
+
+>**注意**：因为每个FlowSchema会给请求赋予唯一一个PriorityLevelConfiguration，所以可以将某一个优先级的所有FlowSchema的Histogram值加起来，就等效于某个优先级的Histogram值了。
+
+- `apiserver_flowcontrol_request_execution_seconds`是一个Histogram向量，表示请求的执行花了多长时间，维度包括`flowSchema`标签（表示请求匹配的FlowSchema）和`priorityLevel`标签（表示请求被赋予的优先级）。
+
 ## 下一步……
