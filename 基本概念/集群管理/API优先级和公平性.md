@@ -179,4 +179,77 @@ kubectl get prioritylevelconfigurations -o custom-columns="uid:{metadata.uid},na
 
 - `apiserver_flowcontrol_request_execution_seconds`是一个Histogram向量，表示请求的执行花了多长时间，维度包括`flowSchema`标签（表示请求匹配的FlowSchema）和`priorityLevel`标签（表示请求被赋予的优先级）。
 
+
+## 调试接口
+
+当你开启了API优先级和公平性之后，kube-apiserver会在它的HTTP(S)端口上额外增加以下路径。
+- `/debug/api_priority_and_fairness/dump_priority_levels`——当前所有优先级及其状态的列表。可以这样获得：
+
+```shell script
+kubectl get --raw /debug/api_priority_and_fairness/dump_priority_levels
+```
+
+输出如下：
+
+```text
+PriorityLevelName, ActiveQueues, IsIdle, IsQuiescing, WaitingRequests, ExecutingRequests,
+workload-low,      0,            true,   false,       0,               0,
+global-default,    0,            true,   false,       0,               0,
+exempt,            <none>,       <none>, <none>,      <none>,          <none>,
+catch-all,         0,            true,   false,       0,               0,
+system,            0,            true,   false,       0,               0,
+leader-election,   0,            true,   false,       0,               0,
+workload-high,     0,            true,   false,       0,               0,
+```
+
+- `/debug/api_priority_and_fairness/dump_queues`——所有队列及其当前状态的列表。可以这样获得：
+
+```shell script
+kubectl get --raw /debug/api_priority_and_fairness/dump_queues
+```
+
+输出如下：
+
+```text
+PriorityLevelName, Index,  PendingRequests, ExecutingRequests, VirtualStart,
+workload-high,     0,      0,               0,                 0.0000,
+workload-high,     1,      0,               0,                 0.0000,
+workload-high,     2,      0,               0,                 0.0000,
+...
+leader-election,   14,     0,               0,                 0.0000,
+leader-election,   15,     0,               0,                 0.0000,
+```
+
+- `/debug/api_priority_and_fairness/dump_requests`——当前所有在队列中排队等待的请求列表。可以这样获得：
+
+```shell script
+kubectl get --raw /debug/api_priority_and_fairness/dump_requests
+```
+
+输出如下：
+
+```text
+PriorityLevelName, FlowSchemaName, QueueIndex, RequestIndexInQueue, FlowDistingsher,       ArriveTime,
+exempt,            <none>,         <none>,     <none>,              <none>,                <none>,
+system,            system-nodes,   12,         0,                   system:node:127.0.0.1, 2020-07-23T15:26:57.179170694Z,
+```
+
+除了排队的请求，对于绕过（exempt）限制的优先级还包含了一行虚记录。
+
+可以这样获取更详细的信息：
+
+```shell script
+kubectl get --raw '/debug/api_priority_and_fairness/dump_requests?includeRequestDetails=1'
+```
+
+输出如下：
+
+```text
+PriorityLevelName, FlowSchemaName, QueueIndex, RequestIndexInQueue, FlowDistingsher,       ArriveTime,                     UserName,              Verb,   APIPath,                                                     Namespace, Name,   APIVersion, Resource, SubResource,
+system,            system-nodes,   12,         0,                   system:node:127.0.0.1, 2020-07-23T15:31:03.583823404Z, system:node:127.0.0.1, create, /api/v1/namespaces/scaletest/configmaps,
+system,            system-nodes,   12,         1,                   system:node:127.0.0.1, 2020-07-23T15:31:03.594555947Z, system:node:127.0.0.1, create, /api/v1/namespaces/scaletest/configmaps,
+```
+
 ## 下一步……
+
+关于API优先级和公平性的更多背景知识，可以去看[增强提案](https://github.com/kubernetes/enhancements/blob/master/keps/sig-api-machinery/20190228-priority-and-fairness.md)。你可以通过[SIG API Machinery](https://github.com/kubernetes/community/tree/master/sig-api-machinery)提出建议或增加新的特性。
