@@ -111,7 +111,7 @@ spec:
 
 ## 出口流量
 
-可以使用可路由的公网或非公网的IPv6地址，底层的[CNI](../计算，存储与网络拓展/网络插件.md#cni)程序可以实现这种传输。如果你的Pod用了一个非公网可路由的IPv6地址，然后想访问集群外部（比如互联网），那你必须对出口流量和返回内容做IP伪装。[ip-masq-agent](https://github.com/kubernetes-sigs/ip-masq-agent)可以支持双栈，所以在双栈的集群中你可以使用ip-masq-agent来进行IP伪装。
+可以使用可路由的公网或非公网的IPv6地址，底层的[CNI](../扩展/计算，存储与网络拓展/网络插件.md#cni)程序可以实现这种传输。如果你的Pod用了一个非公网可路由的IPv6地址，然后想访问集群外部（比如互联网），那你必须对出口流量和返回内容做IP伪装。[ip-masq-agent](https://github.com/kubernetes-sigs/ip-masq-agent)可以支持双栈，所以在双栈的集群中你可以使用ip-masq-agent来进行IP伪装。
 
 ## 已知问题
 
